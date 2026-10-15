@@ -1,6 +1,104 @@
 [package]
-name = "rrea"
-version = "0.1.0"
-edition = "2024"
+name        = "cargo-rrea"
+version     = "0.1.0"
+edition     = "2024"
+description = "Cargo builds with Arkari obfuscation and packed Rust shared dependencies"
+license     = "GPL-3.0-only"
+repository  = "https://github.com/ParkSnoopy/cargo-rrea"
+keywords    = ["cargo", "obfuscation", "llvm", "upx"]
+categories  = ["development-tools::cargo-plugins"]
 
 [dependencies]
+anyhow = "1"
+cargo_metadata = "0.23"
+clap = { version = "4", features = ["derive"] }
+dirs = "7.0"
+fs2 = "0.4"
+object = { version = "0.40", default-features = false, features = ["read", "std", "elf", "pe"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+tar = "0.4"
+tempfile = "3.27"
+toml_edit = "0.25"
+xz2 = "0.1"
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
+
+# ============================================
+# RUST-MAGIC-LINTER (maximum preset)
+# https://github.com/vicnaum/rust-magic-linter
+# ============================================
+# ============================================
+# MAXIMUM PRESET
+# ============================================
+# Everything at deny level - Tenex-style maximum strictness
+# Use this for critical infrastructure or when you want maximum safety
+#
+# WARNING: This is very strict and may require significant code changes
+
+[lints.rust]
+# Safety - forbid means even #![allow(...)] can't override
+unsafe_code = "forbid"
+non_ascii_idents = "forbid"
+
+# Quality enforcement
+warnings = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+future_incompatible = { level = "deny", priority = -1 }
+nonstandard_style = { level = "deny", priority = -1 }
+
+# Documentation enforcement
+missing_docs = "deny"
+missing_debug_implementations = "deny"
+missing_copy_implementations = "deny"
+unfulfilled_lint_expectations = "deny"
+
+[lints.rustdoc]
+all = { level = "deny", priority = -1 }
+
+[lints.clippy]
+# === ALL LINT GROUPS AT DENY ===
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+
+# === THE GUARDRAILS ===
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+
+# Code hygiene
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+# === ASYNC SAFETY ===
+await_holding_lock = "deny"
+large_futures = "deny"
+
+# === PROCESS/MEMORY SAFETY ===
+exit = "deny"
+mem_forget = "deny"
+
+# === PERFORMANCE ===
+large_stack_arrays = "deny"
+large_types_passed_by_value = "deny"
+
+# === MINIMAL RELAXATIONS ===
+# Only the absolutely necessary ones
+multiple_crate_versions = "allow"   # Unavoidable with transitive deps
+
+# Cast lints - too many false positives even for strict projects
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_possible_wrap = "allow"
+
+# Nursery lints that have too many false positives
+cognitive_complexity = "allow"      # Use clippy.toml threshold instead

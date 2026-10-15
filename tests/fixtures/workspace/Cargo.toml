@@ -1,0 +1,7 @@
+[workspace]
+members  = ["app", "logic", "literal"]
+resolver = "3"
+
+[profile.release]
+# Preserve the application's panic strategy.
+panic = "unwind"

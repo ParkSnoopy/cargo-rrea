@@ -1,0 +1,16 @@
+[package]
+name    = "fixture-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fixture-logic   = { path = "../logic" }
+fixture-literal = { path = "../literal" }
+
+[[bin]]
+name = "fixture"
+path = "src/main.rs"
+
+[[bin]]
+name = "secondary"
+path = "src/secondary.rs"
