@@ -8,12 +8,104 @@ mod toolchain;
 use std::{
     env,
     ffi::OsStr,
+    fs,
     io::{self, Write},
     path::{Path, PathBuf},
     process::Command,
 };
 
 use anyhow::{Context, Result, ensure};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpxSource {
+    revision: String,
+    sha256: String,
+}
+
+fn source_files(root: &Path, directory: &Path, files: &mut Vec<String>) -> Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if entry.file_name() == OsStr::new(".git") {
+            continue;
+        }
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            source_files(root, &path, files)?;
+        } else {
+            ensure!(
+                kind.is_file(),
+                "UPX source contains a link or special file: {}",
+                path.display()
+            );
+            let relative = path
+                .strip_prefix(root)?
+                .to_str()
+                .context("UPX source path must be UTF-8")?
+                .replace('\\', "/");
+            ensure!(
+                !relative.contains(['\t', '\r', '\n']),
+                "invalid UPX source path: {relative}"
+            );
+            files.push(relative);
+        }
+    }
+    Ok(())
+}
+
+fn source_revision(source: &Path, output: &mut impl Write) -> Result<String> {
+    let pin: UpxSource = serde_json::from_str(include_str!("thirdparty/upx-source.json"))?;
+    if source.join(".git").exists() {
+        ensure!(
+            Path::new(&git(source, &["rev-parse", "--show-toplevel"])?).canonicalize()?
+                == source.canonicalize()?,
+            "thirdparty/upx is not an initialized Git submodule"
+        );
+        ensure!(
+            git(
+                source,
+                &[
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                    "--ignore-submodules=none"
+                ]
+            )?
+            .is_empty(),
+            "UPX submodule or its vendor dependencies have uncommitted changes"
+        );
+        ensure!(
+            git(source, &["rev-parse", "HEAD"])? == pin.revision,
+            "UPX checkout does not match the pinned revision {}",
+            pin.revision
+        );
+        let git_directory = PathBuf::from(git(source, &["rev-parse", "--absolute-git-dir"])?);
+        for path in [git_directory.join("HEAD"), git_directory.join("refs")] {
+            writeln!(output, "cargo:rerun-if-changed={}", path.display())?;
+        }
+    }
+    let mut files = Vec::new();
+    source_files(source, source, &mut files)?;
+    files.sort();
+    let mut manifest = Vec::new();
+    for path in files {
+        writeln!(
+            manifest,
+            "{path}\t{}",
+            toolchain::sha256(&source.join(&path))?
+        )?;
+    }
+    let digest = toolchain::digest(manifest.as_slice())?;
+    ensure!(
+        digest == pin.sha256,
+        "UPX source checksum mismatch for {}: expected {}, got {digest}",
+        pin.revision,
+        pin.sha256
+    );
+    Ok(pin.revision)
+}
 
 fn git(source: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
@@ -77,44 +169,29 @@ fn prepare_toolchain(out_dir: &Path, output: &mut impl Write) -> Result<()> {
 fn main() -> Result<()> {
     let source = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?).join("thirdparty/upx");
     ensure!(
-        source.join("CMakeLists.txt").is_file() && source.join(".git").exists(),
-        "UPX submodule is missing; run git submodule update --init --recursive"
+        source.join("CMakeLists.txt").is_file(),
+        "UPX sources are missing; initialize recursive submodules when building from a Git checkout"
     );
     ensure!(
         env::var("HOST")? == env::var("TARGET")?,
         "cross-compilation is not supported"
     );
-    ensure!(
-        Path::new(&git(&source, &["rev-parse", "--show-toplevel"])?).canonicalize()?
-            == source.canonicalize()?,
-        "thirdparty/upx is not an initialized Git submodule"
-    );
-    ensure!(
-        git(
-            &source,
-            &[
-                "status",
-                "--porcelain",
-                "--untracked-files=all",
-                "--ignore-submodules=none",
-            ],
-        )?
-        .is_empty(),
-        "UPX submodule or its vendor dependencies have uncommitted changes"
-    );
-    let revision = git(&source, &["rev-parse", "HEAD"])?;
-    let git_directory = PathBuf::from(git(&source, &["rev-parse", "--absolute-git-dir"])?);
     let mut output = io::stdout().lock();
+    let revision = source_revision(&source, &mut output)?;
     writeln!(output, "cargo:rerun-if-changed={}", source.display())?;
-    for path in [git_directory.join("HEAD"), git_directory.join("refs")] {
-        writeln!(output, "cargo:rerun-if-changed={}", path.display())?;
-    }
     for variable in ["CC", "CXX", "CFLAGS", "CXXFLAGS", "CARGO_NET_OFFLINE"] {
         writeln!(output, "cargo:rerun-if-env-changed={variable}")?;
     }
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     prepare_toolchain(&out_dir, &mut output)?;
-    let build = out_dir.join("upx");
+    // Cargo can reuse OUT_DIR when switching between a checkout and its extracted crate.
+    let source_key = toolchain::digest(
+        source
+            .to_str()
+            .context("UPX source path must be UTF-8")?
+            .as_bytes(),
+    )?;
+    let build = out_dir.join("upx").join(source_key);
     let configuration = if env::var("PROFILE")? == "release" {
         "Release"
     } else {

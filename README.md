@@ -6,7 +6,7 @@ Build Rust release applications with Arkari obfuscation, metadata stripping, and
 
 - Rust/Cargo and curl on PATH.
 - Native x86_64 Linux GNU or Windows MSVC; Linux is runtime-tested, Windows is not yet runtime-verified.
-- Source installation also requires Git, CMake, Ninja, and a C/C++ toolchain with C++17 support.
+- Building requires CMake, Ninja, and a C/C++ toolchain with C++17 support. Git is also required for checkout-based builds.
 - On Linux, the system C++ runtime must provide `libstdc++.so.6`.
 
 ## Install

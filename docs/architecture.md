@@ -53,11 +53,16 @@ A relocated or installed CLI without a nearby prepared cache acquires the compil
 Once a cache is selected, acquisition errors do not trigger a fallback to another cache or ordinary Rust compiler.
 The `build` subcommand's `--offline` and `--frozen` options forbid runtime compiler downloads.
 
-UPX is built from the pinned [submodule](../thirdparty/upx), which tracks `devel`.
-Normal builds use the gitlink revision, never fetch moving branch updates, and never fall back to a released UPX binary.
-Modified UPX sources or vendor checkouts are rejected rather than reported as an unchanged upstream commit.
+UPX is built from the pinned [submodule](../thirdparty/upx), which tracks `devel`, or from the same sources bundled in the published crate.
+The [source pin](../thirdparty/upx-source.json) records the upstream revision and a SHA-256 covering every source and recursive vendor file, excluding Git metadata.
+The digest is SHA-256 over sorted UTF-8 relative paths with `/` separators, each followed by a tab, the file's lowercase SHA-256, and LF.
+Both checkout and archive builds verify this digest; links, special files, missing files, extra files, and changed content fail verification.
+Checkout builds additionally require the pinned Git revision and clean recursive submodules.
+Crate archives deliberately do not require `.git` files or Git commands.
+Normal builds never fetch moving branch updates or fall back to a released UPX binary.
 CMake and Ninja build Debug for development/test profiles and Release for release profiles, honoring Cargo's job limit.
 Native build output stays under Cargo's `OUT_DIR`, outside the submodule.
+The native build directory is keyed by its source path because Cargo can reuse `OUT_DIR` between checkout and extracted-crate builds; their CMake caches must remain separate.
 
 The UPX executable is embedded in `cargo-rrea` and materialized atomically into a content-addressed per-user cache with executable permissions.
 Existing cached bytes must match the embedded executable's SHA-256.
@@ -92,6 +97,7 @@ Report-relative paths resolve against the published distribution directory.
 | [src/project.rs](../src/project.rs) | Workspace discovery and format-preserving manifest edits |
 | [src/support.rs](../src/support.rs) | Shared child-process checks and file locks |
 | [build.rs](../build.rs) | Compiler bootstrap, pinned UPX source validation, native compilation, and embedding |
+| [thirdparty/upx-source.json](../thirdparty/upx-source.json) | UPX revision and recursive source-content digest for checkout and crate builds |
 | [src/toolchain.rs](../src/toolchain.rs) | Compiler release selection, verified acquisition, and bounded ZIP extraction shared by bootstrap and runtime |
 | [src/tools.rs](../src/tools.rs) | Runtime cache selection and embedded UPX materialization |
 | [src/dynamic.rs](../src/dynamic.rs) | Dependency selection and compiler argument adaptation |
@@ -121,8 +127,8 @@ Report-relative paths resolve against the published distribution directory.
 
 ## Source development
 
-Build from a Git checkout with recursive submodules initialized.
-Building `cargo-rrea` requires Rust/Cargo, Git, curl, CMake, Ninja, and a C/C++ toolchain with C++17 support.
+Git checkouts require recursive submodules initialized; crate archives already contain the verified UPX sources and vendors.
+Building `cargo-rrea` requires Rust/Cargo, curl, CMake, Ninja, and a C/C++ toolchain with C++17 support; checkout builds also require Git.
 
 Initialize the submodules from the repository root:
 
@@ -137,7 +143,18 @@ git submodule update --remote thirdparty/upx
 git -C thirdparty/upx submodule update --init --recursive
 ```
 
-Review and record the changed gitlink with the consuming code.
+Review and record the changed gitlink with the consuming code, and update the source pin's revision and digest together.
+Read the new revision with `git -C thirdparty/upx rev-parse HEAD` and compute the canonical source digest from the repository root:
+
+```sh
+set -o pipefail
+git -c core.quotePath=false -C thirdparty/upx ls-files --recurse-submodules | LC_ALL=C sort |
+while IFS= read -r path; do
+    checksum=$(sha256sum "thirdparty/upx/$path") || exit 1
+    printf '%s\t%s\n' "$path" "${checksum%% *}"
+done | sha256sum
+```
+
 UPX's [LICENSE](../thirdparty/upx/LICENSE) and [COPYING](../thirdparty/upx/COPYING) remain in the upstream checkout.
 
 Run from the repository root:
@@ -150,6 +167,7 @@ cargo build --release
 cargo run -- --help
 cargo clippy --all-targets
 cargo deny check licenses
+cargo package --locked
 ```
 
 The regular tests verify the bootstrapped compiler and matching sysroot, initialization, archive extraction boundaries, detached offline cache misses, unsupported targets, and UPX cache integrity.
@@ -160,3 +178,5 @@ It also checks relocated loading, failure without the packed dependency, and pre
 
 The maximum Clippy preset applies to the CLI, Cargo build script, shared modules, and tests.
 Run the uncapped all-target gate without changing lint levels or thresholds.
+Packaging verification must build the extracted crate with UPX Git metadata absent; `--no-verify` does not exercise this boundary.
+Use `--allow-dirty` only when intentionally checking uncommitted packaging changes locally.
