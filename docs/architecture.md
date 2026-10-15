@@ -63,6 +63,7 @@ Normal builds never fetch moving branch updates or fall back to a released UPX b
 CMake and Ninja build Debug for development/test profiles and Release for release profiles, honoring Cargo's job limit.
 Native build output stays under Cargo's `OUT_DIR`, outside the submodule.
 The native build directory is keyed by its source path because Cargo can reuse `OUT_DIR` between checkout and extracted-crate builds; their CMake caches must remain separate.
+Linux native compilation remaps UPX source and build paths, including paths in assertions and debug information, so the embedded executable does not leak the checkout location into protected outputs.
 
 The UPX executable is embedded in `cargo-rrea` and materialized atomically into a content-addressed per-user cache with executable permissions.
 Existing cached bytes must match the embedded executable's SHA-256.
@@ -71,8 +72,12 @@ The Linux UPX executable links the system C++ runtime, including `libstdc++.so.6
 
 ## Application build and publication
 
-Selected executable packages' own libraries and first-level normal Rust dependencies also produce Rust `dylib` artifacts.
-Compiler arguments link consumers against these artifacts.
+Selected executable packages' own libraries and the complete normal Rust dependency graph also produce Rust `dylib` artifacts.
+Using the complete graph prevents multiple shared libraries from statically embedding the same transitive crate.
+Compiler arguments link consumers against these artifacts, matching either Cargo's `.rlib` or `.rmeta` dependency paths.
+Target compiler invocations suppress early JSON artifact notifications so Cargo waits for linkable output rather than scheduling shared-library consumers as soon as metadata is ready.
+They retain embedded Rust metadata for compiler linkage even when Cargo requests separate metadata; distribution stripping still removes it afterward.
+Generated shared libraries explicitly resolve the dynamic standard library for the application's allocator and panic runtime, including dependencies declared `no_std`.
 Shared-library inclusion follows the current Cargo artifact messages, including metadata sidecars that identify hashed compiler outputs when Cargo reports a selected workspace library through a hard-linked root output.
 Build scripts and procedural macros remain host-side and do not receive the target LLVM passes.
 
@@ -113,7 +118,7 @@ Report-relative paths resolve against the published distribution directory.
 - Rust `dylib` linkage preserves Rust-to-Rust interfaces without source adapters.
   It does not create a stable C ABI or move executable source into a library.
   Generics and inlining can leave dependency code in executables.
-  Incompatible direct dependency crate types fail instead of silently using static linkage.
+  Incompatible dependency crate types fail instead of silently using static linkage.
 - Precompiled standard-library code and native dependencies do not receive the target LLVM passes.
   Required system libraries remain platform prerequisites.
   The bundle does not discover or copy arbitrary native shared dependencies.
@@ -174,7 +179,8 @@ The regular tests verify the bootstrapped compiler and matching sysroot, initial
 The ignored native test exercises the actual `cargo rrea init` and `cargo rrea build --release` workflow for both default workspace selection and an explicitly selected executable package.
 It uses the bootstrap compiler offline with an initially empty user cache.
 It compares both fixture executables against an ordinary build, including panic and unwind behavior.
-It also checks relocated loading, failure without the packed dependency, and preservation of published output after compilation failure.
+The fixture includes an allocating `no_std` dependency and its transitive `no_std` library.
+It also checks relocated loading, failure without the packed transitive dependency, and preservation of published output after compilation failure.
 
 The maximum Clippy preset applies to the CLI, Cargo build script, shared modules, and tests.
 Run the uncapped all-target gate without changing lint levels or thresholds.

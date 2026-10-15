@@ -197,15 +197,24 @@ fn main() -> Result<()> {
     } else {
         "Debug"
     };
-    checked(
-        Command::new("cmake")
-            .arg("-S")
-            .arg(&source)
-            .arg("-B")
-            .arg(&build)
-            .args(["-G", "Ninja"])
-            .arg(format!("-DCMAKE_BUILD_TYPE={configuration}")),
-    )?;
+    let mut configure = Command::new("cmake");
+    configure
+        .arg("-S")
+        .arg(&source)
+        .arg("-B")
+        .arg(&build)
+        .args(["-G", "Ninja"])
+        .arg(format!("-DCMAKE_BUILD_TYPE={configuration}"));
+    if cfg!(target_os = "linux") {
+        for (language, variable) in [("C", "CFLAGS"), ("CXX", "CXXFLAGS")] {
+            let flags = env::var(variable).unwrap_or_default();
+            configure.arg(format!(
+                "-DCMAKE_{language}_FLAGS={flags} -ffile-prefix-map=\"{}=/upx\" -ffile-prefix-map=\"{}=/upx-build\"",
+                source.display(), build.display()
+            ));
+        }
+    }
+    checked(&mut configure)?;
     checked(
         Command::new("cmake")
             .arg("--build")

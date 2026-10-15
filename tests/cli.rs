@@ -426,8 +426,8 @@ fn verify_distribution(root: &Path, paths: &[PathBuf]) -> Result<Distribution> {
         .as_array()
         .context("missing artifacts")?;
     ensure!(
-        artifacts.len() == 4,
-        "expected four published artifacts, got {artifacts:?}"
+        artifacts.len() == 5,
+        "expected five published artifacts, got {artifacts:?}"
     );
     ensure!(
         report["upx"]["repository"] == "upx/upx",
@@ -461,8 +461,8 @@ fn verify_distribution(root: &Path, paths: &[PathBuf]) -> Result<Distribution> {
         }
     }
     ensure!(
-        packed_libraries.len() == 2,
-        "expected two packed libraries, got {packed_libraries:?}"
+        packed_libraries.len() == 3,
+        "expected three packed libraries, got {packed_libraries:?}"
     );
     Ok(Distribution {
         path: published[0].clone(),
@@ -499,7 +499,7 @@ fn verify_relocation(root: &Path, distribution: &Distribution, paths: &[PathBuf]
         .iter()
         .find(|path| {
             path.file_name()
-                .is_some_and(|name| name.to_string_lossy().contains("fixture_logic"))
+                .is_some_and(|name| name.to_string_lossy().contains("fixture_shared"))
         })
         .context("missing fixture dependency")?;
     let dependency = relocated.join(dependency.file_name().context("missing library name")?);

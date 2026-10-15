@@ -17,3 +17,10 @@ version = "0.1.0"
 [[package]]
 name = "fixture-logic"
 version = "0.1.0"
+dependencies = [
+ "fixture-shared",
+]
+
+[[package]]
+name = "fixture-shared"
+version = "0.1.0"

@@ -66,8 +66,11 @@ impl Policy {
             })
         });
         let mut libraries = Vec::new();
-        for id in selected {
-            // A package's own library is a direct dependency of its binary targets.
+        while let Some(id) = selected.pop() {
+            if libraries.contains(&id) {
+                continue;
+            }
+            // Shared consumers must agree on one dynamic copy of every transitive crate.
             libraries.push(id.clone());
             let node = resolve
                 .nodes
@@ -80,7 +83,7 @@ impl Policy {
                     .iter()
                     .any(|kind| kind.kind == DependencyKind::Normal)
                 {
-                    libraries.push(dependency.pkg.clone());
+                    selected.push(dependency.pkg.clone());
                 }
             }
         }
@@ -150,21 +153,42 @@ pub fn adapt(
         let Some(text) = argument.to_str() else {
             continue;
         };
+        // Cargo must wait for linkable dependencies, not just their pipelined metadata.
+        if let Some(options) = text.strip_prefix("--json=") {
+            *argument = format!(
+                "--json={}",
+                options
+                    .split(',')
+                    .filter(|option| *option != "artifacts")
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+            .into();
+            continue;
+        }
         if let Some((name, path)) = text.split_once('=')
-            && let Some(library) = libraries
-                .iter()
-                .find(|library| library.rlib == Path::new(path))
+            && !name.starts_with('-')
+            && matches!(
+                Path::new(path)
+                    .extension()
+                    .and_then(|extension| extension.to_str()),
+                Some("rlib" | "rmeta")
+            )
         {
+            let rlib = Path::new(path).with_extension("rlib");
+            let linked = libraries
+                .iter()
+                .find(|library| library.rlib == rlib)
+                .map_or(rlib.as_path(), |library| library.dylib.as_path());
             *argument = format!(
                 "{name}={}",
-                library
-                    .dylib
-                    .to_str()
-                    .context("library path is not UTF-8")?
+                linked.to_str().context("library path is not UTF-8")?
             )
             .into();
         }
     }
+    // Newer Cargo versions omit embedded metadata from rlibs by default.
+    args.push("-Zembed-metadata=yes".into());
     args.push("-Cprefer-dynamic=yes".into());
     if cfg!(target_os = "linux") {
         args.push("-Clink-arg=-Wl,-rpath,$ORIGIN".into());
@@ -199,6 +223,12 @@ pub fn adapt(
     if !kinds.contains(&"dylib") {
         args.push("--crate-type=dylib".into());
     }
+    // A no_std library still needs the application's allocator and panic runtime.
+    args.extend([
+        "-Zunstable-options".into(),
+        "--extern".into(),
+        "force,nounused:std".into(),
+    ]);
     Ok(Some(library))
 }
 
