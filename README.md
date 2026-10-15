@@ -6,17 +6,18 @@ Build Rust release applications with Arkari obfuscation, metadata stripping, and
 
 - Rust/Cargo and curl on PATH.
 - Native x86_64 Linux GNU or Windows MSVC; Linux is runtime-tested, Windows is not yet runtime-verified.
-- Building requires CMake, Ninja, and a C/C++ toolchain with C++17 support. Git is also required for checkout-based builds.
+- Installation requires CMake, Ninja, and a C/C++ toolchain with C++17 support.
 - On Linux, the system C++ runtime must provide `libstdc++.so.6`.
 
 ## Install
 
+Install from [crates.io](https://crates.io/crates/cargo-rrea):
+
 ```sh
-git clone --recurse-submodules https://github.com/ParkSnoopy/cargo-rrea
-cd cargo-rrea
-cargo install --path . --locked
+cargo install cargo-rrea --locked
 ```
 
+UPX is built from bundled sources during installation; no Git checkout or submodule initialization is needed.
 The obfuscating toolchain is downloaded automatically when needed; no manual download is required.
 An empty toolchain cache requires internet access.
 
