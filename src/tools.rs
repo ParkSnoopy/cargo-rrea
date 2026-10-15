@@ -12,9 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::project::{checked_output, lock};
 
 const COMPILER_REPO: &str = "ParkSnoopy/rust_llvm-arkari_ollvm";
-const UPX_REPO: &str = "upx/upx";
-// UPX 5.2.1 cannot link its amd64 shared-library stub (missing my_memcpy).
-const UPX_TAG: &str = "v5.1.1";
+const UPX: &[u8] = include_bytes!(env!("RREA_UPX_PATH"));
 const MAX_ARCHIVE: u64 = 1024 * 1024 * 1024;
 const MAX_EXTRACTED: u64 = 4 * MAX_ARCHIVE;
 
@@ -40,7 +38,14 @@ pub struct Tools {
     pub compiler: PathBuf,
     pub upx: PathBuf,
     pub compiler_release: ReleaseAsset,
-    pub upx_release: ReleaseAsset,
+    pub upx_build: UpxBuild,
+}
+
+#[derive(Serialize)]
+pub struct UpxBuild {
+    pub repository: &'static str,
+    pub revision: &'static str,
+    pub sha256: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -61,20 +66,14 @@ impl ReleaseAsset {
         )
     }
 
-    fn validate(&self, repository: &str, host: &str) -> Result<()> {
+    fn validate(&self, host: &str) -> Result<()> {
         ensure!(
-            self.repository == repository,
+            self.repository == COMPILER_REPO,
             "unexpected cached repository"
         );
         ensure!(safe_name(&self.tag), "invalid release tag");
-        if repository == UPX_REPO {
-            ensure!(
-                self.tag == UPX_TAG,
-                "cached UPX does not match the required release {UPX_TAG}"
-            );
-        }
         ensure!(
-            self.name == asset_name(repository, &self.tag, host)?,
+            self.name == format!("{host}.zip"),
             "unexpected release asset"
         );
         ensure!(
@@ -106,18 +105,9 @@ pub fn acquire(offline: bool) -> Result<Tools> {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     }
     let _lock = lock(&root.join("tools.lock"))?;
-    let (compiler_root, compiler_release) =
-        install(&root, "compiler", COMPILER_REPO, host, offline)?;
-    let (upx_root, upx_release) = install(&root, "upx", UPX_REPO, host, offline)?;
+    let (compiler_root, compiler_release) = install_compiler(&root, host, offline)?;
+    let (upx, upx_build) = embedded_upx(&root)?;
     let compiler = compiler_root.join("stage1/bin").join(executable("rustc"));
-    let upx = upx_root
-        .join(
-            upx_release
-                .name
-                .trim_end_matches(".tar.xz")
-                .trim_end_matches(".zip"),
-        )
-        .join(executable("upx"));
     ensure!(
         compiler.is_file(),
         "compiler archive has no stage1/bin/rustc"
@@ -130,12 +120,12 @@ pub fn acquire(offline: bool) -> Result<Tools> {
             .is_dir(),
         "compiler archive has no matching sysroot"
     );
-    ensure!(upx.is_file(), "UPX archive has no expected executable");
+
     Ok(Tools {
         compiler,
         upx,
         compiler_release,
-        upx_release,
+        upx_build,
     })
 }
 
@@ -152,37 +142,44 @@ fn safe_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
 }
 
-fn asset_name(repository: &str, tag: &str, host: &str) -> Result<String> {
-    if repository == COMPILER_REPO {
-        return Ok(format!("{host}.zip"));
-    }
-    let version = tag
-        .strip_prefix('v')
-        .context("unexpected UPX release tag")?;
-    ensure!(safe_name(version), "invalid UPX version");
-    Ok(if host == "x86_64-unknown-linux-gnu" {
-        format!("upx-{version}-amd64_linux.tar.xz")
+fn embedded_upx(root: &Path) -> Result<(PathBuf, UpxBuild)> {
+    let build = UpxBuild {
+        repository: "upx/upx",
+        revision: env!("RREA_UPX_REVISION"),
+        sha256: digest(UPX)?,
+    };
+    let directory = root.join(format!("upx-{}", build.sha256));
+    fs::create_dir_all(&directory)?;
+    let executable = directory.join(executable("upx"));
+    if executable.exists() {
+        ensure!(
+            sha256(&executable)? == build.sha256,
+            "cached UPX SHA-256 mismatch"
+        );
     } else {
-        format!("upx-{version}-win64.zip")
-    })
+        let mut file = tempfile::NamedTempFile::new_in(&directory)?;
+        file.write_all(UPX)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.as_file()
+                .set_permissions(fs::Permissions::from_mode(0o755))?;
+        }
+        file.as_file().sync_all()?;
+        file.persist_noclobber(&executable)
+            .map_err(|error| error.error)?;
+    }
+    Ok((executable, build))
 }
 
-fn install(
-    root: &Path,
-    kind: &str,
-    repository: &str,
-    host: &str,
-    offline: bool,
-) -> Result<(PathBuf, ReleaseAsset)> {
-    let record_path = root.join(if repository == UPX_REPO {
-        format!("{kind}-{UPX_TAG}.json")
-    } else {
-        format!("{kind}.json")
-    });
+fn install_compiler(root: &Path, host: &str, offline: bool) -> Result<(PathBuf, ReleaseAsset)> {
+    let kind = "compiler";
+    let repository = COMPILER_REPO;
+    let record_path = root.join("compiler.json");
     if record_path.exists() {
         let record: ReleaseAsset = serde_json::from_slice(&fs::read(&record_path)?)
             .with_context(|| format!("invalid cache record {}", record_path.display()))?;
-        record.validate(repository, host)?;
+        record.validate(host)?;
         let destination = root.join(format!("{kind}-{}", record.tag));
         ensure!(
             destination.is_dir(),
@@ -209,19 +206,14 @@ fn install(
         browser_download_url: String,
     }
     let response = tempfile::NamedTempFile::new_in(root)?;
-    let selector = if repository == UPX_REPO {
-        format!("tags/{UPX_TAG}")
-    } else {
-        "latest".to_owned()
-    };
     download(
-        &format!("https://api.github.com/repos/{repository}/releases/{selector}"),
+        &format!("https://api.github.com/repos/{repository}/releases/latest"),
         response.path(),
         4 * 1024 * 1024,
     )?;
     let release: Release = serde_json::from_slice(&fs::read(response.path())?)?;
     ensure!(safe_name(&release.tag_name), "invalid release tag");
-    let name = asset_name(repository, &release.tag_name, host)?;
+    let name = format!("{host}.zip");
     let asset = release
         .assets
         .into_iter()
@@ -239,7 +231,7 @@ fn install(
             .to_owned(),
         bytes: asset.size,
     };
-    record.validate(repository, host)?;
+    record.validate(host)?;
     ensure!(
         asset.browser_download_url == record.url(),
         "unexpected asset download URL"
@@ -256,24 +248,8 @@ fn install(
         "downloaded archive SHA-256 mismatch"
     );
     let staging = tempfile::tempdir_in(root)?;
-    if record.name.ends_with(".zip") {
-        extract_zip(archive.path(), staging.path())?;
-    } else {
-        extract_tar(archive.path(), staging.path())?;
-    }
-    let expected = if kind == "compiler" {
-        staging.path().join("stage1/bin").join(executable("rustc"))
-    } else {
-        staging
-            .path()
-            .join(
-                record
-                    .name
-                    .trim_end_matches(".tar.xz")
-                    .trim_end_matches(".zip"),
-            )
-            .join(executable("upx"))
-    };
+    extract_zip(archive.path(), staging.path())?;
+    let expected = staging.path().join("stage1/bin").join(executable("rustc"));
     ensure!(expected.is_file(), "{kind} archive layout is unsupported");
     let destination = root.join(format!("{kind}-{}", record.tag));
     // An interrupted install can leave an unreferenced directory, never a trusted record.
@@ -417,34 +393,27 @@ fn extract_zip(archive: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn extract_tar(archive: &Path, destination: &Path) -> Result<()> {
-    let mut archive = tar::Archive::new(xz2::read::XzDecoder::new(File::open(archive)?));
-    let mut total = 0_u64;
-    for (index, entry) in archive.entries()?.enumerate() {
-        ensure!(index < 100_000, "too many archive entries");
-        let mut entry = entry?;
-        let path = destination.join(archive_path(&entry.path()?)?);
-        let kind = entry.header().entry_type();
-        ensure!(
-            kind.is_file() || kind.is_dir(),
-            "archive links and special files are unsupported"
-        );
-        let bytes = entry.header().size()?;
-        total = total.checked_add(bytes).context("archive size overflow")?;
-        ensure!(total <= MAX_EXTRACTED, "archive expands beyond size limit");
-        if kind.is_dir() {
-            fs::create_dir_all(path)?;
-        } else {
-            let executable = entry.header().mode()? & 0o111 != 0;
-            extract_file(&mut entry, &path, bytes, executable)?;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_upx_reuses_verified_cache_and_rejects_tampering() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let (path, build) = embedded_upx(root.path())?;
+        checked_output(Command::new(&path).arg("--version"))?;
+        ensure!(sha256(&path)? == build.sha256, "embedded UPX hash differs");
+        ensure!(
+            embedded_upx(root.path())?.0 == path,
+            "cached UPX was not reused"
+        );
+        fs::write(path, b"corrupted cache")?;
+        ensure!(
+            embedded_upx(root.path()).is_err(),
+            "corrupted UPX was accepted"
+        );
+        Ok(())
+    }
 
     #[test]
     fn extraction_rejects_traversal_and_links() -> Result<()> {

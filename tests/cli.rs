@@ -129,7 +129,7 @@ fn distributions(root: &Path) -> Result<Vec<std::path::PathBuf>> {
 }
 
 #[test]
-#[ignore = "downloads verified compiler and UPX releases, then compiles and runs owned fixtures"]
+#[ignore = "downloads a verified compiler, then compiles and runs owned fixtures with bundled UPX"]
 fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> Result<()> {
     let root = fixture()?;
     let baseline = root.path().join("baseline");
@@ -201,7 +201,8 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
         .as_array()
         .context("missing artifacts")?;
     assert_eq!(artifacts.len(), 4);
-    assert_eq!(report["upx"]["tag"], "v5.1.1");
+    assert_eq!(report["upx"]["repository"], "upx/upx");
+    assert_eq!(report["upx"]["revision"], env!("RREA_UPX_REVISION"));
     let mut packed_libraries = Vec::new();
     for artifact in artifacts {
         let path = published[0].join(artifact["path"].as_str().context("missing artifact path")?);

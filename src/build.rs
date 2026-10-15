@@ -232,7 +232,7 @@ pub fn run(options: &BuildOptions) -> Result<()> {
     let report = BuildReport {
         target,
         compiler: &tools.compiler_release,
-        upx: &tools.upx_release,
+        upx: &tools.upx_build,
         compiler_version: &compiler_version,
         obfuscation: OBFUSCATION,
         cargo_log: Path::new("cargo.jsonl"),
@@ -558,7 +558,7 @@ struct ArtifactReport {
 struct BuildReport<'a> {
     target: &'a str,
     compiler: &'a tools::ReleaseAsset,
-    upx: &'a tools::ReleaseAsset,
+    upx: &'a tools::UpxBuild,
     compiler_version: &'a str,
     obfuscation: &'a [&'a str],
     cargo_log: &'a Path,

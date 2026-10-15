@@ -11,6 +11,9 @@ Executables remain unpacked.
   Repeated initialization does not rewrite unchanged content.
 - Builds select the cached Arkari compiler and matching sysroot without changing the active Rust installation.
   A compiler failure stops the build without ordinary-rustc fallback.
+- Cargo builds UPX from the pinned [submodule](thirdparty/upx) on the `devel` branch through CMake and Ninja.
+  The executable is embedded in `cargo-rrea` and extracted into a hash-verified user cache at runtime.
+  Runtime UPX acquisition needs neither downloads nor the source checkout.
 - Selected executable packages' own libraries and first-level normal Rust dependencies also produce Rust `dylib` artifacts.
   Compiler arguments link consumers against these artifacts.
   Build scripts and procedural macros remain host-side.
@@ -23,22 +26,23 @@ Executables remain unpacked.
 
 - [CLI](src/main.rs): Cargo invocation, initialization, and build-selection arguments.
 - [Project operations](src/project.rs): workspace discovery, format-preserving manifest edits, locks, and child-process errors.
-- [Tool acquisition](src/tools.rs): release selection, SHA-256 verification, bounded archive extraction, and user-local caching.
+- [Native build](build.rs): pinned UPX source validation, CMake compilation, and executable embedding.
+- [Tool acquisition](src/tools.rs): compiler release selection, bounded ZIP extraction, and verified compiler/UPX caching.
 - [Dynamic linkage](src/dynamic.rs): dependency selection and compiler argument adaptation.
 - [Build pipeline](src/build.rs): obfuscation, artifact collection, stripping, packing, audits, and publication.
 - [Binary inspection](src/audit.rs): ELF/PE metadata, imports, exports, hardening headers, and residual Rust string hints.
 - [Integration tests](tests/cli.rs): initialization, failure boundaries, runtime parity, relocation, and required packed dependencies.
 
 Each distribution includes a `build.json` report and Cargo/compiler logs.
-The report records tool provenance, hashes, packing status, audit results, and known limits.
+The report records compiler release provenance, the UPX source commit and executable hash, packing status, audit results, and known limits.
 
 ## Compatibility and limits
 
 - Native x86_64 Linux GNU execution is verified with the owned workspace fixture.
   Windows MSVC paths exist but do not yet have native runtime verification.
   Cross-compilation and other hosts are rejected.
-- UPX is pinned to 5.1.1.
-  UPX 5.2.1 failed the tested amd64 Linux shared-library packing with `undefined symbol 'my_memcpy'`.
+- The submodule gitlink pins UPX to a specific `devel` commit.
+  Normal builds do not fetch branch updates or fall back to a released UPX binary.
 - Rust `dylib` linkage preserves Rust-to-Rust interfaces without source adapters.
   It does not create a stable C ABI or move executable source into a library.
   Generics and inlining can leave dependency code in executables.
@@ -56,6 +60,29 @@ The report records tool provenance, hashes, packing status, audit results, and k
 
 ## Development verification
 
+Build from a Git checkout with recursive submodules initialized.
+Building `cargo-rrea` requires Git, CMake, Ninja, and a C++17-capable C/C++ toolchain.
+The runtime pipeline also requires Cargo, curl for uncached compiler acquisition, and `llvm-objcopy`.
+The Linux UPX build links the system C++ runtime, including `libstdc++.so.6`.
+Initialize the submodules from the repository root:
+
+```sh
+git submodule update --init --recursive
+```
+
+The [Cargo build script](build.rs) uses Debug for development/test builds and Release for release builds.
+Native build output stays under Cargo's `OUT_DIR`, outside the submodule.
+Modified UPX sources or vendor checkouts are rejected rather than reported as an unchanged upstream commit.
+To update UPX deliberately, advance its branch and initialize the vendor revisions pinned by that commit:
+
+```sh
+git submodule update --remote thirdparty/upx
+git -C thirdparty/upx submodule update --init --recursive
+```
+
+Review and record the changed gitlink with the consuming code.
+UPX's [LICENSE](thirdparty/upx/LICENSE) and [COPYING](thirdparty/upx/COPYING) remain in the upstream checkout.
+
 Run from the repository root:
 
 ```sh
@@ -67,7 +94,7 @@ cargo clippy --all-targets
 cargo deny check licenses
 ```
 
-The ignored native test acquires verified tools when the cache is empty.
+The ignored native test acquires a verified compiler when its cache is empty and uses the bundled UPX build.
 It compares both fixture executables against an ordinary build, including panic and unwind behavior.
 It also checks relocated loading, failure without the packed dependency, and preservation of published output after compilation failure.
 

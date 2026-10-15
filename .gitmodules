@@ -1,0 +1,4 @@
+[submodule "thirdparty/upx"]
+	path = thirdparty/upx
+	url = https://github.com/upx/upx.git
+	branch = devel
