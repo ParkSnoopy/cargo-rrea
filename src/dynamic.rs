@@ -1,7 +1,7 @@
 use std::{
     ffi::OsString,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
 };
 
@@ -29,14 +29,15 @@ impl Policy {
             .resolve
             .as_ref()
             .context("Cargo returned no dependency graph")?;
-        let mut selected = if options.workspace {
+        let selection = &options.selection;
+        let mut selected = if selection.workspace {
             metadata.workspace_members.clone()
-        } else if options.packages.is_empty() {
+        } else if selection.packages.is_empty() {
             metadata.workspace_default_members.iter().cloned().collect()
         } else {
             Vec::new()
         };
-        for spec in &options.packages {
+        for spec in &selection.packages {
             let mut command = project::cargo();
             command.args(["pkgid", "--package", spec]);
             if let Some(path) = &options.manifest_path {
@@ -58,7 +59,7 @@ impl Policy {
         selected.retain(|id| {
             !metadata.packages.iter().any(|package| {
                 package.id == *id
-                    && options
+                    && selection
                         .exclude
                         .iter()
                         .any(|spec| spec == package.name.as_str() || spec == &package.id.repr)
@@ -116,15 +117,13 @@ pub fn value<'a>(args: &'a [OsString], key: &str) -> Option<&'a str> {
         }
         if argument == "-C"
             && let Some(codegen) = key.strip_prefix("-C")
-        {
-            if let Some(value) = args
+            && let Some(value) = args
                 .get(index + 1)?
                 .to_str()?
                 .strip_prefix(codegen)
                 .and_then(|tail| tail.strip_prefix('='))
-            {
-                return Some(value);
-            }
+        {
+            return Some(value);
         }
     }
     None
@@ -139,7 +138,11 @@ pub fn adapt(
     let direct = args
         .iter()
         .filter_map(|arg| arg.to_str())
-        .filter(|arg| arg.ends_with(".rs"))
+        .filter(|arg| {
+            Path::new(arg)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
+        })
         .filter_map(|arg| Path::new(arg).canonicalize().ok())
         .any(|source| policy.sources.contains(&source));
     let libraries = read_libraries(library_log)?;
@@ -147,20 +150,19 @@ pub fn adapt(
         let Some(text) = argument.to_str() else {
             continue;
         };
-        if let Some((name, path)) = text.split_once('=') {
-            if let Some(library) = libraries
+        if let Some((name, path)) = text.split_once('=')
+            && let Some(library) = libraries
                 .iter()
                 .find(|library| library.rlib == Path::new(path))
-            {
-                *argument = format!(
-                    "{name}={}",
-                    library
-                        .dylib
-                        .to_str()
-                        .context("library path is not UTF-8")?
-                )
-                .into();
-            }
+        {
+            *argument = format!(
+                "{name}={}",
+                library
+                    .dylib
+                    .to_str()
+                    .context("library path is not UTF-8")?
+            )
+            .into();
         }
     }
     args.push("-Cprefer-dynamic=yes".into());
@@ -208,7 +210,6 @@ pub fn read_libraries(path: &Path) -> Result<Vec<Library>> {
         .write(true)
         .open(path)?;
     file.lock_shared()?;
-    use std::io::{BufRead, BufReader};
     let mut libraries = Vec::new();
     for line in BufReader::new(&file).lines() {
         libraries.push(serde_json::from_str(&line?)?);

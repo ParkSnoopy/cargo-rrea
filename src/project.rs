@@ -1,7 +1,7 @@
 use std::{
     ffi::OsString,
     fs::{self, OpenOptions},
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -18,16 +18,16 @@ pub fn cargo() -> Command {
 
 
 pub fn workspace_manifest(manifest: Option<&Path>) -> Result<PathBuf> {
+    #[derive(serde::Deserialize)]
+    struct Located {
+        root: PathBuf,
+    }
     let mut command = cargo();
     command.args(["locate-project", "--workspace", "--message-format", "json"]);
     if let Some(path) = manifest {
         command.arg("--manifest-path").arg(path);
     }
     let output = checked_output(&mut command)?;
-    #[derive(serde::Deserialize)]
-    struct Located {
-        root: PathBuf,
-    }
     Ok(serde_json::from_slice::<Located>(&output.stdout)?.root)
 }
 
@@ -39,7 +39,7 @@ pub fn init(manifest: Option<&Path>) -> Result<()> {
     file.read_to_string(&mut original)?;
     let updated = release_settings(&original)?;
     if updated == original {
-        println!("unchanged {}", path.display());
+        writeln!(io::stdout().lock(), "unchanged {}", path.display())?;
         return Ok(());
     }
     let parent = path.parent().context("manifest has no parent directory")?;
@@ -55,7 +55,7 @@ pub fn init(manifest: Option<&Path>) -> Result<()> {
         path.display()
     );
     temporary.persist(&path).map_err(|error| error.error)?;
-    println!("updated {}", path.display());
+    writeln!(io::stdout().lock(), "updated {}", path.display())?;
     Ok(())
 }
 
@@ -112,19 +112,28 @@ mod tests {
         ] {
             let updated = release_settings(source)?;
             let parsed = updated.parse::<DocumentMut>()?;
-            assert_eq!(parsed["profile"]["release"]["debug"].as_integer(), Some(0));
-            assert_eq!(
-                parsed["profile"]["release"]["strip"].as_str(),
-                Some("symbols")
+            ensure!(
+                parsed["profile"]["release"]["debug"].as_integer() == Some(0),
+                "release debug setting was not updated"
             );
-            assert_eq!(release_settings(&updated)?, updated);
+            ensure!(
+                parsed["profile"]["release"]["strip"].as_str() == Some("symbols"),
+                "release strip setting was not updated"
+            );
+            ensure!(
+                release_settings(&updated)? == updated,
+                "init is not idempotent"
+            );
             for comment in ["# project", "# retain this", "# diagnosis", "# symbols"] {
                 if source.contains(comment) {
-                    assert!(updated.contains(comment), "lost {comment}: {updated}");
+                    ensure!(updated.contains(comment), "lost {comment}: {updated}");
                 }
             }
             if source.contains("lto") {
-                assert_eq!(parsed["profile"]["release"]["lto"].as_str(), Some("thin"));
+                ensure!(
+                    parsed["profile"]["release"]["lto"].as_str() == Some("thin"),
+                    "init changed the LTO strategy"
+                );
             }
         }
         for invalid in [
@@ -133,7 +142,7 @@ mod tests {
             "[profile]\nrelease = 4",
             "[profile.release.debug]\nx = 1",
         ] {
-            assert!(release_settings(invalid).is_err(), "accepted {invalid}");
+            ensure!(release_settings(invalid).is_err(), "accepted {invalid}");
         }
         Ok(())
     }

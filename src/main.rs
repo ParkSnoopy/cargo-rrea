@@ -8,9 +8,14 @@ mod support;
 mod toolchain;
 mod tools;
 
-use std::{ffi::OsString, path::PathBuf, process::ExitCode};
+use std::{
+    ffi::OsString,
+    io::{self, Write},
+    path::PathBuf,
+    process::ExitCode,
+};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
@@ -20,9 +25,7 @@ use clap::{Args, Parser, Subcommand};
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Option<Action>,
-    #[command(flatten)]
-    build: BuildOptions,
+    command: Action,
 }
 
 #[derive(Subcommand)]
@@ -32,12 +35,31 @@ enum Action {
         #[arg(long, value_name = "PATH")]
         manifest_path: Option<PathBuf>,
     },
+    /// Build release executables with Arkari obfuscation and packed libraries.
+    Build(BuildOptions),
 }
 
-#[derive(Args, Default, PartialEq, Eq)]
+#[derive(Args)]
 struct BuildOptions {
+    /// Build with the release profile (required for protection).
+    #[arg(short = 'r', long, required = true)]
+    release: bool,
     #[arg(long, value_name = "PATH")]
     manifest_path: Option<PathBuf>,
+    #[arg(long, value_name = "TRIPLE")]
+    target: Option<String>,
+    #[arg(short = 'j', long, value_name = "N")]
+    jobs: Option<std::num::NonZeroUsize>,
+    #[command(flatten)]
+    selection: SelectionOptions,
+    #[command(flatten)]
+    features: FeatureOptions,
+    #[command(flatten)]
+    network: NetworkOptions,
+}
+
+#[derive(Args)]
+struct SelectionOptions {
     #[arg(short = 'p', long = "package", value_name = "SPEC")]
     packages: Vec<String>,
     #[arg(long, value_name = "NAME", conflicts_with = "bins")]
@@ -48,22 +70,26 @@ struct BuildOptions {
     workspace: bool,
     #[arg(long, requires = "workspace", value_name = "SPEC")]
     exclude: Vec<String>,
-    #[arg(short = 'F', long, value_name = "FEATURES")]
-    features: Vec<String>,
-    #[arg(long)]
-    all_features: bool,
-    #[arg(long)]
-    no_default_features: bool,
-    #[arg(long, value_name = "TRIPLE")]
-    target: Option<String>,
+}
+
+#[derive(Args)]
+struct FeatureOptions {
+    #[arg(short = 'F', long = "features", value_name = "FEATURES")]
+    enabled: Vec<String>,
+    #[arg(long = "all-features")]
+    all: bool,
+    #[arg(long = "no-default-features")]
+    no_default: bool,
+}
+
+#[derive(Args)]
+struct NetworkOptions {
     #[arg(long)]
     locked: bool,
     #[arg(long)]
     offline: bool,
     #[arg(long)]
     frozen: bool,
-    #[arg(short = 'j', long, value_name = "N")]
-    jobs: Option<std::num::NonZeroUsize>,
 }
 
 fn run() -> Result<()> {
@@ -76,14 +102,8 @@ fn run() -> Result<()> {
     }
     let cli = Cli::parse_from(args);
     match cli.command {
-        Some(Action::Init { manifest_path }) => {
-            // A subcommand must not silently discard build selections.
-            if cli.build != BuildOptions::default() {
-                bail!("build options cannot be combined with init");
-            }
-            project::init(manifest_path.as_deref())
-        }
-        None => build::run(&cli.build),
+        Action::Init { manifest_path } => project::init(manifest_path.as_deref()),
+        Action::Build(options) => build::run(&options),
     }
 }
 
@@ -91,7 +111,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: {error:#}");
+            let _ = writeln!(io::stderr().lock(), "error: {error:#}");
             ExitCode::FAILURE
         }
     }

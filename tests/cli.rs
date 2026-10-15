@@ -2,7 +2,8 @@
 
 use std::{
     fs,
-    path::Path,
+    io::{self, Write},
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 
@@ -10,6 +11,19 @@ use anyhow::{Context, Result, ensure};
 
 fn cli() -> Command {
     Command::new(env!("CARGO_BIN_EXE_cargo-rrea"))
+}
+
+fn cargo_cli() -> Result<Command> {
+    let plugin_directory = Path::new(env!("CARGO_BIN_EXE_cargo-rrea"))
+        .parent()
+        .context("missing Cargo plugin directory")?;
+    let path = std::env::var_os("PATH").context("missing PATH")?;
+    let paths = std::iter::once(plugin_directory.to_path_buf()).chain(std::env::split_paths(&path));
+    let mut command = Command::new("cargo");
+    command
+        .arg("rrea")
+        .env("PATH", std::env::join_paths(paths)?);
+    Ok(command)
 }
 
 fn success(command: &mut Command) -> Result<Output> {
@@ -54,39 +68,95 @@ fn init_updates_only_the_workspace_root_and_rejects_invalid_input() -> Result<()
     let member_before = fs::read(&member)?;
     success(cli().args(["rrea", "init", "--manifest-path"]).arg(&member))?;
     let updated = fs::read_to_string(&manifest)?;
-    assert!(updated.contains("# Preserve the application's panic strategy."));
+    ensure!(
+        updated.contains("# Preserve the application's panic strategy."),
+        "init removed the panic strategy comment"
+    );
     let document = updated.parse::<toml_edit::DocumentMut>()?;
-    assert_eq!(
-        document["profile"]["release"]["debug"].as_integer(),
-        Some(0)
+    ensure!(
+        document["profile"]["release"]["debug"].as_integer() == Some(0),
+        "init did not disable release debug information: {document}"
     );
-    assert_eq!(
-        document["profile"]["release"]["strip"].as_str(),
-        Some("symbols")
+    ensure!(
+        document["profile"]["release"]["strip"].as_str() == Some("symbols"),
+        "init did not enable symbol stripping: {document}"
     );
-    assert_eq!(
-        document["profile"]["release"]["panic"].as_str(),
-        Some("unwind")
+    ensure!(
+        document["profile"]["release"]["panic"].as_str() == Some("unwind"),
+        "init changed the panic strategy: {document}"
     );
-    assert_eq!(fs::read(&member)?, member_before);
+    ensure!(
+        fs::read(&member)? == member_before,
+        "init changed the member manifest"
+    );
     let repeated = success(cli().args(["init", "--manifest-path"]).arg(&manifest))?;
-    assert!(String::from_utf8(repeated.stdout)?.starts_with("unchanged "));
-    assert_eq!(fs::read_to_string(&manifest)?, updated);
+    ensure!(
+        String::from_utf8(repeated.stdout)?.starts_with("unchanged "),
+        "repeated init did not report unchanged content"
+    );
+    ensure!(
+        fs::read_to_string(&manifest)? == updated,
+        "init is not idempotent"
+    );
     fs::write(&manifest, "[workspace\n")?;
     let invalid = cli()
         .args(["init", "--manifest-path"])
         .arg(&manifest)
         .output()?;
-    assert!(!invalid.status.success());
-    assert_eq!(fs::read_to_string(&manifest)?, "[workspace\n");
-    assert!(!cli().arg("--definitely-unknown").output()?.status.success());
-    assert!(
+    ensure!(!invalid.status.success(), "init accepted invalid TOML");
+    ensure!(
+        fs::read_to_string(&manifest)? == "[workspace\n",
+        "init changed invalid TOML"
+    );
+    ensure!(
+        !cli().arg("--definitely-unknown").output()?.status.success(),
+        "CLI accepted an unknown option"
+    );
+    ensure!(
         !cli()
             .args(["--workspace", "init"])
             .output()?
             .status
-            .success()
+            .success(),
+        "init accepted build selections"
     );
+    Ok(())
+}
+
+#[test]
+fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<()> {
+    for args in [
+        vec![],
+        vec!["--bins"],
+        vec!["build"],
+        vec!["build", "--release", "--definitely-unknown"],
+        vec!["build", "--release", "--bin", "fixture", "--bins"],
+        vec!["build", "--release", "--exclude", "fixture-app"],
+        vec!["init", "--release"],
+    ] {
+        let output = cli().args(&args).output()?;
+        ensure!(
+            output.status.code() == Some(2),
+            "invalid invocation {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let output = success(cargo_cli()?.args(["build", "--help"]))?;
+    let help = String::from_utf8(output.stdout)?;
+    for flag in [
+        "--release",
+        "--package",
+        "--features",
+        "--all-features",
+        "--no-default-features",
+        "--offline",
+        "--frozen",
+        "--locked",
+        "--target",
+        "--jobs",
+    ] {
+        ensure!(help.contains(flag), "build help omits {flag}: {help}");
+    }
     Ok(())
 }
 
@@ -146,19 +216,33 @@ fn offline_cache_miss_and_unsupported_targets_do_not_publish() -> Result<()> {
     fs::copy(env!("CARGO_BIN_EXE_cargo-rrea"), &detached)?;
     let output = Command::new(detached)
         .current_dir(root.path())
-        .arg("--offline")
+        .args(["build", "--release", "--offline"])
         .env("XDG_CACHE_HOME", cache.path())
         .env("LOCALAPPDATA", cache.path())
         .output()?;
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("not cached"));
-    assert!(distributions(root.path())?.is_empty());
+    ensure!(!output.status.success(), "offline cache miss succeeded");
+    ensure!(
+        String::from_utf8_lossy(&output.stderr).contains("not cached"),
+        "offline miss did not report a missing cache"
+    );
+    ensure!(
+        distributions(root.path())?.is_empty(),
+        "offline cache miss published output"
+    );
     let output = cli()
         .current_dir(root.path())
-        .args(["--target", "aarch64-unknown-linux-gnu"])
+        .args([
+            "build",
+            "--release",
+            "--target",
+            "aarch64-unknown-linux-gnu",
+        ])
         .output()?;
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("cross-compilation is not supported"));
+    ensure!(!output.status.success(), "unsupported target succeeded");
+    ensure!(
+        String::from_utf8_lossy(&output.stderr).contains("cross-compilation is not supported"),
+        "unsupported target was not diagnosed"
+    );
     Ok(())
 }
 
@@ -181,6 +265,23 @@ fn distributions(root: &Path) -> Result<Vec<std::path::PathBuf>> {
 #[test]
 #[ignore = "compiles and runs owned fixtures with the bootstrapped compiler and bundled UPX"]
 fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> Result<()> {
+    for selection in [
+        &[][..],
+        &[
+            "--package",
+            "fixture-app",
+            "--bins",
+            "--locked",
+            "--offline",
+        ],
+    ] {
+        verify_native_pipeline(selection)
+            .with_context(|| format!("native build selection: {selection:?}"))?;
+    }
+    Ok(())
+}
+
+fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
     let root = fixture()?;
     let baseline = root.path().join("baseline");
     success(
@@ -195,28 +296,67 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
             ])
             .arg(&baseline),
     )?;
+    success(cargo_cli()?.current_dir(root.path()).arg("init"))?;
     let cache = tempfile::tempdir()?;
     let output = success(
-        cli()
+        cargo_cli()?
             .current_dir(root.path())
             .env("XDG_CACHE_HOME", cache.path())
             .env("LOCALAPPDATA", cache.path())
-            .args([
-                "--package",
-                "fixture-app",
-                "--bins",
-                "--locked",
-                "--offline",
-            ]),
+            .env("CARGO_NET_OFFLINE", "true")
+            .args(["build", "--release"])
+            .args(selection),
     )?;
-    eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+    writeln!(
+        io::stderr().lock(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    )?;
     let paths: Vec<_> = String::from_utf8(output.stdout)?
         .lines()
         .map(std::path::PathBuf::from)
         .collect();
-    assert_eq!(paths.len(), 2);
+    ensure!(
+        paths.len() == 2,
+        "expected both fixture executables, got {paths:?}"
+    );
+    verify_behavior(&baseline, &paths)?;
+    let distribution = verify_distribution(root.path(), &paths)?;
+    verify_relocation(root.path(), &distribution, &paths)?;
+    let report = &distribution.report;
+    ensure!(
+        report["obfuscation"]
+            .as_array()
+            .context("missing flags")?
+            .len()
+            == 8,
+        "unexpected obfuscation flags: {}",
+        report["obfuscation"]
+    );
+    let invocation_log = report["compiler_invocations"]
+        .as_str()
+        .context("missing invocation log")?;
+    let log = fs::read_to_string(distribution.path.join(invocation_log))?;
+    ensure!(log.contains("--irobf-fla"), "missing flattening pass");
+    ensure!(
+        log.contains("fixture_logic"),
+        "dependency was not obfuscated"
+    );
+    ensure!(
+        !log.contains("--crate-name\",\"fixture_literal"),
+        "procedural macro received target passes"
+    );
+    ensure!(
+        !log.contains("--crate-name\",\"build_script_build"),
+        "build script received target passes"
+    );
+    verify_failed_publication(root.path(), &distribution)?;
+    Ok(())
+}
+
+fn verify_behavior(baseline: &Path, paths: &[PathBuf]) -> Result<()> {
     let suffix = std::env::consts::EXE_SUFFIX;
-    for path in &paths {
+    for path in paths {
         let filename = path.file_name().context("missing artifact name")?;
         let original = baseline.join("debug").join(filename);
         let cases = if filename == format!("fixture{suffix}").as_str() {
@@ -237,22 +377,42 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
         for argument in cases {
             let expected = Command::new(&original).arg(argument).output()?;
             let actual = Command::new(path).arg(argument).output()?;
-            assert_eq!(
+            ensure!(
+                actual.status.code() == expected.status.code(),
+                "exit: {path:?} {argument}: actual={:?}, expected={:?}",
                 actual.status.code(),
-                expected.status.code(),
-                "exit: {path:?} {argument}"
+                expected.status.code()
             );
-            assert_eq!(
-                actual.stdout, expected.stdout,
-                "stdout: {path:?} {argument}"
+            ensure!(
+                actual.stdout == expected.stdout,
+                "stdout: {path:?} {argument}: actual={:?}, expected={:?}",
+                actual.stdout,
+                expected.stdout
             );
             if argument == "--panic" {
-                assert!(String::from_utf8_lossy(&actual.stderr).contains("fixture panic marker"));
+                ensure!(
+                    String::from_utf8_lossy(&actual.stderr).contains("fixture panic marker"),
+                    "missing panic marker: {path:?}"
+                );
             }
         }
     }
-    let published = distributions(root.path())?;
-    assert_eq!(published.len(), 1);
+    Ok(())
+}
+
+struct Distribution {
+    path: PathBuf,
+    artifacts: Vec<PathBuf>,
+    packed_libraries: Vec<PathBuf>,
+    report: serde_json::Value,
+}
+
+fn verify_distribution(root: &Path, paths: &[PathBuf]) -> Result<Distribution> {
+    let published = distributions(root)?;
+    ensure!(
+        published.len() == 1,
+        "expected exactly one published distribution, got {published:?}"
+    );
     let report: serde_json::Value =
         serde_json::from_slice(&fs::read(published[0].join("build.json"))?)?;
     let compiler_record: serde_json::Value = serde_json::from_slice(&fs::read(
@@ -265,39 +425,77 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
     let artifacts = report["artifacts"]
         .as_array()
         .context("missing artifacts")?;
-    assert_eq!(artifacts.len(), 4);
-    assert_eq!(report["upx"]["repository"], "upx/upx");
-    assert_eq!(report["upx"]["revision"], env!("RREA_UPX_REVISION"));
+    ensure!(
+        artifacts.len() == 4,
+        "expected four published artifacts, got {artifacts:?}"
+    );
+    ensure!(
+        report["upx"]["repository"] == "upx/upx",
+        "unexpected UPX repository: {}",
+        report["upx"]
+    );
+    ensure!(
+        report["upx"]["revision"] == env!("RREA_UPX_REVISION"),
+        "unexpected UPX revision: {}",
+        report["upx"]
+    );
     let mut packed_libraries = Vec::new();
+    let mut published_paths = Vec::new();
     for artifact in artifacts {
         let path = published[0].join(artifact["path"].as_str().context("missing artifact path")?);
         let data = fs::read(&path)?;
         let packed = artifact["packed"]
             .as_bool()
             .context("missing packing status")?;
-        assert_eq!(data.windows(4).any(|bytes| bytes == b"UPX!"), packed);
-        assert_eq!(packed, !paths.contains(&path));
+        ensure!(
+            data.windows(4).any(|bytes| bytes == b"UPX!") == packed,
+            "packing signature mismatch: {path:?}, packed={packed}"
+        );
+        ensure!(
+            packed != paths.contains(&path),
+            "incorrect executable/library packing role: {path:?}, packed={packed}"
+        );
+        published_paths.push(path.clone());
         if packed {
             packed_libraries.push(path);
         }
     }
-    assert_eq!(packed_libraries.len(), 2);
+    ensure!(
+        packed_libraries.len() == 2,
+        "expected two packed libraries, got {packed_libraries:?}"
+    );
+    Ok(Distribution {
+        path: published[0].clone(),
+        artifacts: published_paths,
+        packed_libraries,
+        report,
+    })
+}
+
+fn verify_relocation(root: &Path, distribution: &Distribution, paths: &[PathBuf]) -> Result<()> {
+    let suffix = std::env::consts::EXE_SUFFIX;
     // Relocation and a missing dependency check exclude accidental build-tree loading.
-    let relocated = root.path().join("relocated");
-    copy_tree(&published[0].join("fixture-app"), &relocated)?;
-    for path in &paths {
+    let relocated = root.join("relocated");
+    copy_tree(&distribution.path.join("fixture-app"), &relocated)?;
+    for path in paths {
         let filename = path.file_name().context("missing executable name")?;
         let expected = success(Command::new(path).arg("7"))?;
         let actual = success(
             Command::new(relocated.join(filename))
-                .current_dir(root.path())
+                .current_dir(root)
                 .env_remove("LD_LIBRARY_PATH")
                 .env_remove("LD_PRELOAD")
                 .arg("7"),
         )?;
-        assert_eq!(actual.stdout, expected.stdout);
+        ensure!(
+            actual.stdout == expected.stdout,
+            "relocated output mismatch: {path:?}: actual={:?}, expected={:?}",
+            actual.stdout,
+            expected.stdout
+        );
     }
-    let dependency = packed_libraries
+    let dependency = distribution
+        .packed_libraries
         .iter()
         .find(|path| {
             path.file_name()
@@ -313,49 +511,49 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
         .arg("7")
         .output()?;
     fs::rename(&hidden, &dependency)?;
-    assert!(
+    ensure!(
         !missing.status.success(),
         "executable did not require its packed dependency"
     );
-    assert_eq!(
-        report["obfuscation"]
-            .as_array()
-            .context("missing flags")?
-            .len(),
-        8
-    );
-    let invocation_log = report["compiler_invocations"]
-        .as_str()
-        .context("missing invocation log")?;
-    let log = fs::read_to_string(published[0].join(invocation_log))?;
-    assert!(log.contains("--irobf-fla"));
-    assert!(log.contains("fixture_logic"));
-    assert!(!log.contains("--crate-name\",\"fixture_literal"));
-    assert!(!log.contains("--crate-name\",\"build_script_build"));
-    let published_paths: Vec<_> = artifacts
-        .iter()
-        .map(|artifact| {
-            Ok(published[0].join(artifact["path"].as_str().context("missing artifact path")?))
-        })
-        .collect::<Result<_>>()?;
-    let prior_contents: Vec<_> = published_paths
+    Ok(())
+}
+
+fn verify_failed_publication(root: &Path, distribution: &Distribution) -> Result<()> {
+    let prior_contents: Vec<_> = distribution
+        .artifacts
         .iter()
         .map(fs::read)
         .collect::<std::io::Result<_>>()?;
     let failed = cli()
-        .current_dir(root.path())
-        .args(["--package", "fixture-app", "--bins", "--offline"])
+        .current_dir(root)
+        .args([
+            "build",
+            "--release",
+            "--package",
+            "fixture-app",
+            "--bins",
+            "--offline",
+        ])
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env("RUSTFLAGS", "-Cdebuginfo=2")
         .output()?;
-    assert!(!failed.status.success());
-    assert!(String::from_utf8_lossy(&failed.stderr).contains("conflicts with rrea protection"));
-    assert_eq!(distributions(root.path())?, published);
-    for (path, original) in published_paths.iter().zip(prior_contents) {
-        assert_eq!(fs::read(path)?, original);
-    }
-    eprintln!(
-        "verified compiler/UPX pipeline, both executables, panic/unwind behavior, and failed-publication boundary"
+    ensure!(
+        !failed.status.success(),
+        "conflicting protection flags succeeded"
     );
+    ensure!(
+        String::from_utf8_lossy(&failed.stderr).contains("conflicts with rrea protection"),
+        "missing protection conflict diagnostic"
+    );
+    ensure!(
+        distributions(root)? == [distribution.path.clone()],
+        "failed build changed published distributions"
+    );
+    for (path, original) in distribution.artifacts.iter().zip(prior_contents) {
+        ensure!(
+            fs::read(path)? == original,
+            "failed build changed artifact {path:?}"
+        );
+    }
     Ok(())
 }

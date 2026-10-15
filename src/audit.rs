@@ -92,24 +92,7 @@ pub fn inspect(path: &Path, clean: bool, prohibited_paths: &[&Path]) -> Result<I
         _ => bail!("only ELF64 and PE32+ executables are supported"),
     };
     if clean {
-        for section in file.sections() {
-            let name = section.name()?;
-            ensure!(
-                !unwanted_section(name),
-                "metadata section remains after stripping: {name}"
-            );
-        }
-        ensure!(
-            file.symbols().next().is_none(),
-            "static symbols remain after stripping"
-        );
-        for path in prohibited_paths {
-            let path = path.to_str().context("build paths must be UTF-8")?;
-            ensure!(
-                !contains_text(&data, path),
-                "build path remains in executable: {path}"
-            );
-        }
+        validate_clean(&file, &data, prohibited_paths)?;
     }
     let mut imports = Vec::new();
     for entry in file.imports()? {
@@ -143,6 +126,28 @@ pub fn inspect(path: &Path, clean: bool, prohibited_paths: &[&Path]) -> Result<I
         hardening,
         rust_string_hints,
     })
+}
+
+fn validate_clean(file: &object::File<'_>, data: &[u8], prohibited_paths: &[&Path]) -> Result<()> {
+    for section in file.sections() {
+        let name = section.name()?;
+        ensure!(
+            !unwanted_section(name),
+            "metadata section remains after stripping: {name}"
+        );
+    }
+    ensure!(
+        file.symbols().next().is_none(),
+        "static symbols remain after stripping"
+    );
+    for path in prohibited_paths {
+        let path = path.to_str().context("build paths must be UTF-8")?;
+        ensure!(
+            !contains_text(data, path),
+            "build path remains in executable: {path}"
+        );
+    }
+    Ok(())
 }
 
 pub fn unwanted_section(name: &str) -> bool {

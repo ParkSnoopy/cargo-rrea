@@ -351,7 +351,10 @@ mod tests {
     fn extraction_rejects_traversal_and_links() -> Result<()> {
         use zip::write::SimpleFileOptions;
         for name in ["../escape", "/absolute", "C:/escape", "dir\\escape"] {
-            assert!(archive_path(Path::new(name)).is_err());
+            ensure!(
+                archive_path(Path::new(name)).is_err(),
+                "accepted unsafe archive path {name}"
+            );
         }
         let root = tempfile::tempdir()?;
         for (name, link) in [("../escape", false), ("link", true)] {
@@ -365,7 +368,10 @@ mod tests {
             }
             writer.finish()?;
             let destination = tempfile::tempdir_in(root.path())?;
-            assert!(extract_zip(archive.path(), destination.path()).is_err());
+            ensure!(
+                extract_zip(archive.path(), destination.path()).is_err(),
+                "accepted unsafe archive entry {name}"
+            );
         }
         Ok(())
     }

@@ -26,19 +26,19 @@ Run inside the Rust project you want to build:
 
 ```sh
 cargo rrea init
-cargo rrea --bins
+cargo rrea build --release
 ```
 
 `init` sets release debug information to zero and enables symbol stripping in the workspace manifest.
 It preserves unrelated settings and comments.
-Builds use the release profile.
+`build` requires `--release` (or `-r`); development profiles are not supported.
 
 Select a package and executable, or build with an already cached toolchain offline:
 
 ```sh
-cargo rrea --package my-app --bin my-app
-cargo rrea --offline --bins
-cargo rrea --help
+cargo rrea build --release --package my-app --bin my-app
+cargo rrea build --release --offline --bins
+cargo rrea build --help
 ```
 
 Executable paths are printed on stdout.

@@ -3,7 +3,10 @@
 ## Scope and build contract
 
 `cargo-rrea` is a Cargo subcommand for native release builds with Arkari LLVM passes, metadata stripping, and UPX-packed Rust shared libraries.
-`cargo rrea` and direct `cargo-rrea` invocation select the same pipeline.
+`cargo rrea init` initializes the workspace manifest.
+`cargo rrea build --release` and direct `cargo-rrea build --release` invocation select the same pipeline.
+Build flags belong to the `build` subcommand, not the root command or `init`.
+`build` requires explicit `--release` (or `-r`); development and custom profiles are not supported.
 Executables remain unpacked.
 
 `init` changes only the workspace root manifest's release `debug` and `strip` values.
@@ -48,7 +51,7 @@ At runtime, the CLI searches its executable's ancestors for the prepared `downlo
 This reuses bootstrap output for both normal binaries and Cargo test artifacts without embedding an absolute source-checkout path.
 A relocated or installed CLI without a nearby prepared cache acquires the compiler automatically in the per-user `cargo-rrea/<host>/` cache.
 Once a cache is selected, acquisition errors do not trigger a fallback to another cache or ordinary Rust compiler.
-The CLI's `--offline` and `--frozen` options forbid runtime compiler downloads.
+The `build` subcommand's `--offline` and `--frozen` options forbid runtime compiler downloads.
 
 UPX is built from the pinned [submodule](../thirdparty/upx), which tracks `devel`.
 Normal builds use the gitlink revision, never fetch moving branch updates, and never fall back to a released UPX binary.
@@ -65,6 +68,7 @@ The Linux UPX executable links the system C++ runtime, including `libstdc++.so.6
 
 Selected executable packages' own libraries and first-level normal Rust dependencies also produce Rust `dylib` artifacts.
 Compiler arguments link consumers against these artifacts.
+Shared-library inclusion follows the current Cargo artifact messages, including metadata sidecars that identify hashed compiler outputs when Cargo reports a selected workspace library through a hard-linked root output.
 Build scripts and procedural macros remain host-side and do not receive the target LLVM passes.
 
 The pipeline strips nonessential metadata, packs shared libraries and the compiler's dynamic standard library, and leaves executables unpacked.
@@ -149,9 +153,10 @@ cargo deny check licenses
 ```
 
 The regular tests verify the bootstrapped compiler and matching sysroot, initialization, archive extraction boundaries, detached offline cache misses, unsupported targets, and UPX cache integrity.
-The ignored native test uses the bootstrap compiler offline with an initially empty user cache.
+The ignored native test exercises the actual `cargo rrea init` and `cargo rrea build --release` workflow for both default workspace selection and an explicitly selected executable package.
+It uses the bootstrap compiler offline with an initially empty user cache.
 It compares both fixture executables against an ordinary build, including panic and unwind behavior.
 It also checks relocated loading, failure without the packed dependency, and preservation of published output after compilation failure.
 
-The maximum Clippy preset has an existing backlog, including CLI output, Result-returning test assertions, and function-length findings.
-Runtime checks do not imply a clean Clippy result.
+The maximum Clippy preset applies to the CLI, Cargo build script, shared modules, and tests.
+Run the uncapped all-target gate without changing lint levels or thresholds.

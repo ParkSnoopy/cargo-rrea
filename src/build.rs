@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -10,6 +10,7 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use cargo_metadata::{Message, Metadata, MetadataCommand, TargetKind};
 use fs2::FileExt;
+use object::{Object, ObjectSection};
 use serde::Serialize;
 
 use crate::{BuildOptions, audit, dynamic, project, tools};
@@ -36,11 +37,11 @@ pub fn run(options: &BuildOptions) -> Result<()> {
     );
 
     let metadata = metadata(options)?;
-    let workspace = fs::canonicalize(&metadata.workspace_root)?;
+
     let root = metadata.target_directory.as_std_path().join("rrea");
     fs::create_dir_all(&root)?;
     let _lock = project::lock(&root.join("build.lock"))?;
-    let tools = tools::acquire(options.offline || options.frozen)?;
+    let tools = tools::acquire(options.network.offline || options.network.frozen)?;
     project::checked_output(Command::new(&tools.objcopy).arg("--version"))
         .context("downloaded llvm-objcopy cannot sanitize executable metadata")?;
     let compiler_version = project::checked_output(Command::new(&tools.compiler).arg("-vV"))?;
@@ -52,10 +53,96 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         "downloaded compiler host does not match {target}"
     );
     project::checked_output(Command::new(&tools.upx).arg("--version"))?;
+    let sysroot = tools
+        .compiler
+        .parent()
+        .and_then(Path::parent)
+        .context("compiler has no sysroot")?;
+    let mut prepared = prepare_build(&root, &metadata, options, &tools, sysroot, target)?;
+    let log = prepared.directory.join("cargo.jsonl");
+    writeln!(
+        io::stderr().lock(),
+        "building with {}; log: {}",
+        tools.compiler_release.tag,
+        log.display()
+    )?;
+    let CollectedArtifacts {
+        mut artifacts,
+        active_rlibs,
+    } = collect_artifacts(&mut prepared.command, &metadata, &log)?;
+    ensure!(
+        !artifacts.is_empty(),
+        "Cargo produced no selected executables"
+    );
+    let staging = tempfile::Builder::new()
+        .prefix(".staging-")
+        .tempdir_in(&root)?;
+    let executables = add_runtime_libraries(
+        &mut artifacts,
+        &active_rlibs,
+        &prepared.directory.join("libraries.jsonl"),
+        sysroot,
+        target,
+    )?;
+    let prohibited: Vec<_> = prepared
+        .prohibited_paths
+        .iter()
+        .map(PathBuf::as_path)
+        .collect();
+    let outputs = prepare_artifacts(
+        artifacts,
+        &executables,
+        staging.path(),
+        &tools,
+        target,
+        &prohibited,
+    )?;
+    let report = BuildReport {
+        target,
+        compiler: &tools.compiler_release,
+        upx: &tools.upx_build,
+        compiler_version: &compiler_version,
+        obfuscation: OBFUSCATION,
+        cargo_log: Path::new("cargo.jsonl"),
+        compiler_invocations: Path::new("rustc-invocations.jsonl"),
+        artifacts: &outputs,
+        limitations: [
+            "Precompiled standard libraries and native dependencies are not fully covered by these LLVM passes.",
+            "Rust runtime strings and code patterns can remain. UPX packing is reversible.",
+            "Metadata and UPX checks do not prove functional equivalence or resistance to reverse engineering.",
+        ],
+    };
+    let destination = publish(&root, staging.path(), &prepared.directory, &report)?;
+    let mut stdout = io::stdout().lock();
+    for executable in executables {
+        writeln!(stdout, "{}", destination.join(executable).display())?;
+    }
+    writeln!(
+        io::stderr().lock(),
+        "report: {}",
+        destination.join("build.json").display()
+    )?;
+    Ok(())
+}
+
+struct PreparedBuild {
+    command: Command,
+    directory: PathBuf,
+    prohibited_paths: Vec<PathBuf>,
+}
+
+fn prepare_build(
+    root: &Path,
+    metadata: &Metadata,
+    options: &BuildOptions,
+    tools: &tools::Tools,
+    sysroot: &Path,
+    target: &str,
+) -> Result<PreparedBuild> {
+    let workspace = fs::canonicalize(&metadata.workspace_root)?;
     let wrapper = std::env::current_exe()?.canonicalize()?;
     let wrapper_hash = tools::sha256(&wrapper)?;
-    let policy = dynamic::Policy::from_metadata(&metadata, options)?;
-    let policy = serde_json::to_vec(&policy)?;
+    let policy = serde_json::to_vec(&dynamic::Policy::from_metadata(metadata, options)?)?;
     let mut build_key = format!("{}:{wrapper_hash}:", tools.compiler_release.sha256).into_bytes();
     build_key.extend_from_slice(&policy);
     let build_directory = root
@@ -68,17 +155,6 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         .or_else(|| dirs::home_dir().map(|home| home.join(".cargo")))
         .context("cannot determine Cargo home")?;
     let cargo_home = fs::canonicalize(cargo_home)?;
-    let sysroot = tools
-        .compiler
-        .parent()
-        .and_then(Path::parent)
-        .context("compiler has no sysroot")?;
-    let prohibited = [
-        workspace.as_path(),
-        cargo_home.as_path(),
-        build_directory.as_path(),
-        sysroot,
-    ];
     let invocations = build_directory.join("rustc-invocations.jsonl");
     let policy_path = build_directory.join("policy.json");
     fs::write(&policy_path, policy)?;
@@ -87,7 +163,6 @@ pub fn run(options: &BuildOptions) -> Result<()> {
     command
         .args([
             "build",
-            "--release",
             "--message-format=json-render-diagnostics",
             "--target",
             target,
@@ -118,22 +193,27 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         command.arg("--config").arg(format!("{key}={value}"));
     }
     build_arguments(&mut command, options);
-    let log = build_directory.join("cargo.jsonl");
-    eprintln!(
-        "building with {}; log: {}",
-        tools.compiler_release.tag,
-        log.display()
-    );
-    let (mut artifacts, active_rlibs) = collect_artifacts(&mut command, &metadata, &log)?;
-    ensure!(
-        !artifacts.is_empty(),
-        "Cargo produced no selected executables"
-    );
-    let staging = tempfile::Builder::new()
-        .prefix(".staging-")
-        .tempdir_in(&root)?;
+    Ok(PreparedBuild {
+        command,
+        prohibited_paths: vec![
+            workspace,
+            cargo_home,
+            build_directory.clone(),
+            sysroot.to_path_buf(),
+        ],
+        directory: build_directory,
+    })
+}
+
+fn add_runtime_libraries(
+    artifacts: &mut BTreeMap<PathBuf, PathBuf>,
+    active_rlibs: &BTreeSet<PathBuf>,
+    library_log: &Path,
+    sysroot: &Path,
+    target: &str,
+) -> Result<BTreeSet<PathBuf>> {
     let executables: BTreeSet<_> = artifacts.keys().cloned().collect();
-    let libraries = dynamic::read_libraries(&library_log)?;
+    let libraries = dynamic::read_libraries(library_log)?;
     let mut runtime_libraries: BTreeSet<_> = libraries
         .into_iter()
         .filter(|library| active_rlibs.contains(&library.rlib))
@@ -157,15 +237,26 @@ pub fn run(options: &BuildOptions) -> Result<()> {
             );
         }
     }
+    Ok(executables)
+}
+
+fn prepare_artifacts(
+    artifacts: BTreeMap<PathBuf, PathBuf>,
+    executables: &BTreeSet<PathBuf>,
+    staging: &Path,
+    tools: &tools::Tools,
+    target: &str,
+    prohibited: &[&Path],
+) -> Result<Vec<ArtifactReport>> {
     let mut outputs = Vec::new();
     for (relative, original) in artifacts {
         let packed_library = !executables.contains(&relative);
-        eprintln!("sanitizing {}", relative.display());
+        writeln!(io::stderr().lock(), "sanitizing {}", relative.display())?;
         let original_audit = audit::inspect(&original, false, &[])?;
-        let clean = staging.path().join(&relative);
+        let clean = staging.join(&relative);
         fs::create_dir_all(clean.parent().context("artifact has no parent")?)?;
         let data = fs::read(&original)?;
-        use object::{Object, ObjectSection};
+
         let object = object::File::parse(data.as_slice())?;
         let mut strip = Command::new(&tools.objcopy);
         strip.arg("--strip-all");
@@ -177,19 +268,20 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         }
         strip.arg(&original).arg(&clean);
         project::checked_output(&mut strip)?;
-        let unpacked_audit = audit::inspect(&clean, true, &prohibited)?;
+        let unpacked_audit = audit::inspect(&clean, true, prohibited)?;
         audit::same_runtime_metadata(&original_audit, &unpacked_audit)?;
         let unpacked_sha256 = tools::sha256(&clean)?;
         let unpacked_bytes = fs::metadata(&clean)?.len();
         if !unpacked_audit.rust_string_hints.is_empty() {
-            eprintln!(
+            writeln!(
+                io::stderr().lock(),
                 "warning: {} retains Rust runtime string hints: {}",
                 relative.display(),
                 unpacked_audit.rust_string_hints.join(", ")
-            );
+            )?;
         }
         if packed_library {
-            eprintln!("packing {}", relative.display());
+            writeln!(io::stderr().lock(), "packing {}", relative.display())?;
             let packed = clean.with_extension("rrea-packed");
             let mut pack = Command::new(&tools.upx);
             pack.args(["--no-env", "--best", "--overlay=copy"]);
@@ -206,7 +298,7 @@ pub fn run(options: &BuildOptions) -> Result<()> {
                     .args(["--no-env", "--test"])
                     .arg(&packed),
             )?;
-            audit::inspect(&packed, true, &prohibited)?;
+            audit::inspect(&packed, true, prohibited)?;
             let recovered = clean.with_extension("rrea-recovered");
             project::checked_output(
                 Command::new(&tools.upx)
@@ -214,7 +306,7 @@ pub fn run(options: &BuildOptions) -> Result<()> {
                     .arg(&recovered)
                     .arg(&packed),
             )?;
-            let recovered_audit = audit::inspect(&recovered, true, &prohibited)?;
+            let recovered_audit = audit::inspect(&recovered, true, prohibited)?;
             audit::same_runtime_metadata(&unpacked_audit, &recovered_audit)?;
             fs::remove_file(&clean)?;
             fs::remove_file(&recovered)?;
@@ -230,42 +322,37 @@ pub fn run(options: &BuildOptions) -> Result<()> {
             unpacked_audit,
         });
     }
-    let report = BuildReport {
-        target,
-        compiler: &tools.compiler_release,
-        upx: &tools.upx_build,
-        compiler_version: &compiler_version,
-        obfuscation: OBFUSCATION,
-        cargo_log: Path::new("cargo.jsonl"),
-        compiler_invocations: Path::new("rustc-invocations.jsonl"),
-        artifacts: &outputs,
-        limitations: [
-            "Precompiled standard libraries and native dependencies are not fully covered by these LLVM passes.",
-            "Rust runtime strings and code patterns can remain. UPX packing is reversible.",
-            "Metadata and UPX checks do not prove functional equivalence or resistance to reverse engineering.",
-        ],
-    };
-    fs::copy(&log, staging.path().join("cargo.jsonl"))?;
-    fs::copy(&invocations, staging.path().join("rustc-invocations.jsonl"))?;
-    let mut report_file = File::create(staging.path().join("build.json"))?;
-    serde_json::to_writer_pretty(&mut report_file, &report)?;
+    Ok(outputs)
+}
+
+fn publish(
+    root: &Path,
+    staging: &Path,
+    build_directory: &Path,
+    report: &BuildReport<'_>,
+) -> Result<PathBuf> {
+    fs::copy(
+        build_directory.join("cargo.jsonl"),
+        staging.join("cargo.jsonl"),
+    )?;
+    fs::copy(
+        build_directory.join("rustc-invocations.jsonl"),
+        staging.join("rustc-invocations.jsonl"),
+    )?;
+    let mut report_file = File::create(staging.join("build.json"))?;
+    serde_json::to_writer_pretty(&mut report_file, report)?;
     report_file.write_all(b"\n")?;
     report_file.sync_all()?;
     drop(report_file);
     let suffix = staging
-        .path()
         .file_name()
         .and_then(OsStr::to_str)
         .and_then(|name| name.strip_prefix(".staging-"))
         .context("invalid staging directory")?;
     let destination = root.join(format!("dist-{suffix}"));
     ensure!(!destination.exists(), "output directory already exists");
-    fs::rename(staging.path(), &destination)?;
-    for executable in executables {
-        println!("{}", destination.join(executable).display());
-    }
-    eprintln!("report: {}", destination.join("build.json").display());
-    Ok(())
+    fs::rename(staging, &destination)?;
+    Ok(destination)
 }
 
 fn path_value(path: &Path) -> Result<String> {
@@ -280,24 +367,24 @@ fn metadata(options: &BuildOptions) -> Result<Metadata> {
         command.manifest_path(path);
     }
     let mut flags = vec!["--filter-platform".to_owned(), tools::host()?.to_owned()];
-    if options.all_features {
+    if options.features.all {
         command.features(cargo_metadata::CargoOpt::AllFeatures);
     }
-    if options.no_default_features {
+    if options.features.no_default {
         command.features(cargo_metadata::CargoOpt::NoDefaultFeatures);
     }
-    if !options.features.is_empty() {
+    if !options.features.enabled.is_empty() {
         command.features(cargo_metadata::CargoOpt::SomeFeatures(
-            options.features.clone(),
+            options.features.enabled.clone(),
         ));
     }
-    if options.offline {
+    if options.network.offline {
         flags.push("--offline".to_owned());
     }
-    if options.locked {
+    if options.network.locked {
         flags.push("--locked".to_owned());
     }
-    if options.frozen {
+    if options.network.frozen {
         flags.push("--frozen".to_owned());
     }
     command.other_options(flags);
@@ -309,23 +396,24 @@ fn build_arguments(command: &mut Command, options: &BuildOptions) {
         command.arg("--manifest-path").arg(path);
     }
     for (flag, values) in [
-        ("--package", &options.packages),
-        ("--bin", &options.bin),
-        ("--exclude", &options.exclude),
-        ("--features", &options.features),
+        ("--package", &options.selection.packages),
+        ("--bin", &options.selection.bin),
+        ("--exclude", &options.selection.exclude),
+        ("--features", &options.features.enabled),
     ] {
         for value in values {
             command.arg(flag).arg(value);
         }
     }
     for (enabled, flag) in [
-        (options.bins, "--bins"),
-        (options.workspace, "--workspace"),
-        (options.all_features, "--all-features"),
-        (options.no_default_features, "--no-default-features"),
-        (options.locked, "--locked"),
-        (options.offline, "--offline"),
-        (options.frozen, "--frozen"),
+        (options.release, "--release"),
+        (options.selection.bins, "--bins"),
+        (options.selection.workspace, "--workspace"),
+        (options.features.all, "--all-features"),
+        (options.features.no_default, "--no-default-features"),
+        (options.network.locked, "--locked"),
+        (options.network.offline, "--offline"),
+        (options.network.frozen, "--frozen"),
     ] {
         if enabled {
             command.arg(flag);
@@ -336,11 +424,16 @@ fn build_arguments(command: &mut Command, options: &BuildOptions) {
     }
 }
 
+struct CollectedArtifacts {
+    artifacts: BTreeMap<PathBuf, PathBuf>,
+    active_rlibs: BTreeSet<PathBuf>,
+}
+
 fn collect_artifacts(
     command: &mut Command,
     metadata: &Metadata,
     log: &Path,
-) -> Result<(BTreeMap<PathBuf, PathBuf>, BTreeSet<PathBuf>)> {
+) -> Result<CollectedArtifacts> {
     let mut child = command
         .stdout(Stdio::piped())
         .spawn()
@@ -356,14 +449,16 @@ fn collect_artifacts(
             let line = line?;
             writeln!(log_file, "{line}")?;
             let Ok(message) = serde_json::from_str::<Message>(&line) else {
-                eprintln!("{line}");
+                writeln!(io::stderr().lock(), "{line}")?;
                 return Ok(());
             };
             match message {
                 Message::CompilerArtifact(artifact) => {
                     for filename in &artifact.filenames {
-                        if filename.extension() == Some("rlib") {
-                            active_rlibs.insert(filename.clone().into_std_path_buf());
+                        // A selected workspace library can expose a hard-linked root rlib;
+                        // its metadata sidecar still identifies the compiler's hashed output.
+                        if matches!(filename.extension(), Some("rlib" | "rmeta")) {
+                            active_rlibs.insert(filename.as_std_path().with_extension("rlib"));
                         }
                     }
                     if artifact.target.kind.contains(&TargetKind::Bin)
@@ -391,7 +486,7 @@ fn collect_artifacts(
                 }
                 Message::CompilerMessage(message) => {
                     if let Some(rendered) = message.message.rendered {
-                        eprint!("{rendered}");
+                        write!(io::stderr().lock(), "{rendered}")?;
                     }
                 }
                 Message::BuildFinished(result) => build_finished = result.success,
@@ -414,7 +509,10 @@ fn collect_artifacts(
         "Cargo build failed; log: {}",
         log.display()
     );
-    Ok((artifacts, active_rlibs))
+    Ok(CollectedArtifacts {
+        artifacts,
+        active_rlibs,
+    })
 }
 
 pub fn rustc_wrapper() -> Result<()> {
@@ -484,15 +582,14 @@ pub fn rustc_wrapper() -> Result<()> {
         .status()
         .context("cannot start obfuscating compiler")?;
     ensure!(status.success(), "obfuscating compiler failed ({status})");
-    if let Some(library) = generated_library {
-        if dynamic::value(&args, "--emit")
+    if let Some(library) = generated_library
+        && dynamic::value(&args, "--emit")
             .is_some_and(|emit| emit.split(',').any(|part| part == "link"))
-        {
-            dynamic::record(
-                Path::new(&std::env::var_os("RREA_LIBRARIES").context("missing library log")?),
-                &library,
-            )?;
-        }
+    {
+        dynamic::record(
+            Path::new(&std::env::var_os("RREA_LIBRARIES").context("missing library log")?),
+            &library,
+        )?;
     }
     Ok(())
 }
