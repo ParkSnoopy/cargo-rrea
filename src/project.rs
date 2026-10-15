@@ -1,32 +1,21 @@
 use std::{
     ffi::OsString,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::Command,
 };
 
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
 use toml_edit::{DocumentMut, Item, Table, Value};
 
+pub use crate::support::{checked_output, lock};
+
 pub fn cargo() -> Command {
     Command::new(std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")))
 }
 
-pub fn checked_output(command: &mut Command) -> Result<Output> {
-    let output = command
-        .output()
-        .with_context(|| format!("cannot start {}", command.get_program().to_string_lossy()))?;
-    ensure!(
-        output.status.success(),
-        "{} failed ({}): {}",
-        command.get_program().to_string_lossy(),
-        output.status,
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    Ok(output)
-}
 
 pub fn workspace_manifest(manifest: Option<&Path>) -> Result<PathBuf> {
     let mut command = cargo();
@@ -107,19 +96,6 @@ fn release_settings(original: &str) -> Result<String> {
     Ok(document.to_string())
 }
 
-pub fn lock(path: &Path) -> Result<File> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)?;
-    if file.try_lock_exclusive().is_err() {
-        eprintln!("waiting for {}", path.display());
-        file.lock_exclusive()?;
-    }
-    Ok(file)
-}
 
 #[cfg(test)]
 mod tests {

@@ -4,6 +4,8 @@ mod audit;
 mod build;
 mod dynamic;
 mod project;
+mod support;
+mod toolchain;
 mod tools;
 
 use std::{ffi::OsString, path::PathBuf, process::ExitCode};

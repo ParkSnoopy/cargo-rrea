@@ -34,14 +34,15 @@ pub fn run(options: &BuildOptions) -> Result<()> {
             .is_none_or(|requested| requested == target),
         "cross-compilation is not supported; target must be {target}"
     );
-    project::checked_output(Command::new("llvm-objcopy").arg("--version"))
-        .context("llvm-objcopy is required to sanitize executable metadata")?;
+
     let metadata = metadata(options)?;
     let workspace = fs::canonicalize(&metadata.workspace_root)?;
     let root = metadata.target_directory.as_std_path().join("rrea");
     fs::create_dir_all(&root)?;
     let _lock = project::lock(&root.join("build.lock"))?;
     let tools = tools::acquire(options.offline || options.frozen)?;
+    project::checked_output(Command::new(&tools.objcopy).arg("--version"))
+        .context("downloaded llvm-objcopy cannot sanitize executable metadata")?;
     let compiler_version = project::checked_output(Command::new(&tools.compiler).arg("-vV"))?;
     let compiler_version = String::from_utf8(compiler_version.stdout)?;
     ensure!(
@@ -166,7 +167,7 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         let data = fs::read(&original)?;
         use object::{Object, ObjectSection};
         let object = object::File::parse(data.as_slice())?;
-        let mut strip = Command::new("llvm-objcopy");
+        let mut strip = Command::new(&tools.objcopy);
         strip.arg("--strip-all");
         for section in object.sections() {
             let name = section.name()?;

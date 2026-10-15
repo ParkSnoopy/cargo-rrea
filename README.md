@@ -1,102 +1,56 @@
 # cargo-rrea
 
-Cargo release pipeline with Arkari LLVM obfuscation, metadata stripping, and UPX-packed Rust shared libraries.
-Executables remain unpacked.
+Build Rust release applications with Arkari obfuscation, metadata stripping, and packed shared libraries.
 
-## Build contract
+## Requirements
 
-- `cargo rrea` and direct `cargo-rrea` invocation select the same pipeline.
-- `init` changes only the workspace root manifest's release `debug` and `strip` values.
-  It preserves unrelated settings, comments, and the panic strategy.
-  Repeated initialization does not rewrite unchanged content.
-- Builds select the cached Arkari compiler and matching sysroot without changing the active Rust installation.
-  A compiler failure stops the build without ordinary-rustc fallback.
-- Cargo builds UPX from the pinned [submodule](thirdparty/upx) on the `devel` branch through CMake and Ninja.
-  The executable is embedded in `cargo-rrea` and extracted into a hash-verified user cache at runtime.
-  Runtime UPX acquisition needs neither downloads nor the source checkout.
-- Selected executable packages' own libraries and first-level normal Rust dependencies also produce Rust `dylib` artifacts.
-  Compiler arguments link consumers against these artifacts.
-  Build scripts and procedural macros remain host-side.
-- The pipeline strips nonessential metadata, packs shared libraries and the compiler's dynamic standard library, and leaves executables unpacked.
-  Linux executables locate adjacent libraries through `$ORIGIN`.
-- Publication follows stripping, metadata audits, UPX integrity checks, and decompression audits in a staging directory.
-  Failed builds do not replace existing distribution directories.
+- Rust/Cargo and curl on PATH.
+- Native x86_64 Linux GNU or Windows MSVC; Linux is runtime-tested, Windows is not yet runtime-verified.
+- Source installation also requires Git, CMake, Ninja, and a C/C++ toolchain with C++17 support.
+- On Linux, the system C++ runtime must provide `libstdc++.so.6`.
 
-## Source ownership
-
-- [CLI](src/main.rs): Cargo invocation, initialization, and build-selection arguments.
-- [Project operations](src/project.rs): workspace discovery, format-preserving manifest edits, locks, and child-process errors.
-- [Native build](build.rs): pinned UPX source validation, CMake compilation, and executable embedding.
-- [Tool acquisition](src/tools.rs): compiler release selection, bounded ZIP extraction, and verified compiler/UPX caching.
-- [Dynamic linkage](src/dynamic.rs): dependency selection and compiler argument adaptation.
-- [Build pipeline](src/build.rs): obfuscation, artifact collection, stripping, packing, audits, and publication.
-- [Binary inspection](src/audit.rs): ELF/PE metadata, imports, exports, hardening headers, and residual Rust string hints.
-- [Integration tests](tests/cli.rs): initialization, failure boundaries, runtime parity, relocation, and required packed dependencies.
-
-Each distribution includes a `build.json` report and Cargo/compiler logs.
-The report records compiler release provenance, the UPX source commit and executable hash, packing status, audit results, and known limits.
-
-## Compatibility and limits
-
-- Native x86_64 Linux GNU execution is verified with the owned workspace fixture.
-  Windows MSVC paths exist but do not yet have native runtime verification.
-  Cross-compilation and other hosts are rejected.
-- The submodule gitlink pins UPX to a specific `devel` commit.
-  Normal builds do not fetch branch updates or fall back to a released UPX binary.
-- Rust `dylib` linkage preserves Rust-to-Rust interfaces without source adapters.
-  It does not create a stable C ABI or move executable source into a library.
-  Generics and inlining can leave dependency code in executables.
-  Incompatible direct dependency crate types fail instead of silently using static linkage.
-- Precompiled standard-library code and native dependencies do not receive the target LLVM passes.
-  Required system libraries remain platform prerequisites.
-  The bundle does not discover or copy arbitrary native shared dependencies.
-- Required dynamic exports and unwind data remain.
-  Rust runtime strings, type names, and recognizable code can remain.
-  Metadata removal does not guarantee removal of every Rust fingerprint.
-- UPX packing is reversible, not encryption.
-  Integrity checks do not establish resistance to reverse engineering or application behavior beyond the exercised fixtures.
-- Application builds execute their own build scripts and procedural macros.
-  The pipeline is not a sandbox for untrusted projects.
-
-## Development verification
-
-Build from a Git checkout with recursive submodules initialized.
-Building `cargo-rrea` requires Git, CMake, Ninja, and a C++17-capable C/C++ toolchain.
-The runtime pipeline also requires Cargo, curl for uncached compiler acquisition, and `llvm-objcopy`.
-The Linux UPX build links the system C++ runtime, including `libstdc++.so.6`.
-Initialize the submodules from the repository root:
+## Install
 
 ```sh
-git submodule update --init --recursive
+git clone --recurse-submodules https://github.com/ParkSnoopy/cargo-rrea
+cd cargo-rrea
+cargo install --path . --locked
 ```
 
-The [Cargo build script](build.rs) uses Debug for development/test builds and Release for release builds.
-Native build output stays under Cargo's `OUT_DIR`, outside the submodule.
-Modified UPX sources or vendor checkouts are rejected rather than reported as an unchanged upstream commit.
-To update UPX deliberately, advance its branch and initialize the vendor revisions pinned by that commit:
+The obfuscating toolchain is downloaded automatically when needed; no manual download is required.
+An empty toolchain cache requires internet access.
+
+## Use
+
+Run inside the Rust project you want to build:
 
 ```sh
-git submodule update --remote thirdparty/upx
-git -C thirdparty/upx submodule update --init --recursive
+cargo rrea init
+cargo rrea --bins
 ```
 
-Review and record the changed gitlink with the consuming code.
-UPX's [LICENSE](thirdparty/upx/LICENSE) and [COPYING](thirdparty/upx/COPYING) remain in the upstream checkout.
+`init` sets release debug information to zero and enables symbol stripping in the workspace manifest.
+It preserves unrelated settings and comments.
+Builds use the release profile.
 
-Run from the repository root:
+Select a package and executable, or build with an already cached toolchain offline:
 
 ```sh
-cargo fmt --check
-cargo test
-cargo test --test cli real_native_pipeline -- --ignored --nocapture
-cargo build --release
-cargo clippy --all-targets
-cargo deny check licenses
+cargo rrea --package my-app --bin my-app
+cargo rrea --offline --bins
+cargo rrea --help
 ```
 
-The ignored native test acquires a verified compiler when its cache is empty and uses the bundled UPX build.
-It compares both fixture executables against an ordinary build, including panic and unwind behavior.
-It also checks relocated loading, failure without the packed dependency, and preservation of published output after compilation failure.
+Executable paths are printed on stdout.
+Find the complete distribution, report, and logs under your project's `target/rrea/dist-<id>/` directory, or the equivalent custom Cargo target directory.
+Distribute the entire application directory, including its shared libraries—not just the executable.
+Executables remain unpacked; their Rust shared libraries are packed.
 
-The maximum Clippy preset currently reports a backlog, including CLI output, Result-returning test assertions, and function-length findings.
-The pipeline's runtime checks do not imply a clean Clippy result.
+## Limits
+
+- Cross-compilation is not supported.
+- Required native/system libraries are not automatically bundled.
+- Rust strings and recognizable code can remain; UPX packing is reversible, not encryption.
+- Only build projects you trust: their build scripts and procedural macros execute during compilation.
+
+[Architecture and source development](docs/architecture.md)

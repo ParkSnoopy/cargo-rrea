@@ -91,10 +91,60 @@ fn init_updates_only_the_workspace_root_and_rejects_invalid_input() -> Result<()
 }
 
 #[test]
+fn cargo_bootstrap_prepares_a_runnable_matching_toolchain() -> Result<()> {
+    let cache = Path::new(env!("RREA_DOWNLOADS"));
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(cache.join("compiler.json"))?)?;
+    let tag = record["tag"].as_str().context("missing compiler tag")?;
+    let toolchain = cache.join(format!("compiler-{tag}/stage1"));
+    let host = cache
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("missing host")?;
+    ensure!(
+        record["repository"] == "ParkSnoopy/rust_llvm-arkari_ollvm",
+        "unexpected compiler source"
+    );
+    ensure!(
+        toolchain
+            .join("lib/rustlib")
+            .join(host)
+            .join("lib")
+            .is_dir(),
+        "missing matching sysroot"
+    );
+    let version = success(
+        Command::new(toolchain.join(format!("bin/rustc{}", std::env::consts::EXE_SUFFIX)))
+            .arg("-vV"),
+    )?;
+    ensure!(
+        String::from_utf8(version.stdout)?
+            .lines()
+            .any(|line| line == format!("host: {host}")),
+        "compiler host mismatch"
+    );
+    success(
+        Command::new(
+            toolchain
+                .join("lib/rustlib")
+                .join(host)
+                .join("bin")
+                .join(format!("llvm-objcopy{}", std::env::consts::EXE_SUFFIX)),
+        )
+        .arg("--version"),
+    )?;
+    Ok(())
+}
+
+#[test]
 fn offline_cache_miss_and_unsupported_targets_do_not_publish() -> Result<()> {
     let root = fixture()?;
     let cache = tempfile::tempdir()?;
-    let output = cli()
+    let detached = root
+        .path()
+        .join(format!("cargo-rrea{}", std::env::consts::EXE_SUFFIX));
+    fs::copy(env!("CARGO_BIN_EXE_cargo-rrea"), &detached)?;
+    let output = Command::new(detached)
         .current_dir(root.path())
         .arg("--offline")
         .env("XDG_CACHE_HOME", cache.path())
@@ -129,7 +179,7 @@ fn distributions(root: &Path) -> Result<Vec<std::path::PathBuf>> {
 }
 
 #[test]
-#[ignore = "downloads a verified compiler, then compiles and runs owned fixtures with bundled UPX"]
+#[ignore = "compiles and runs owned fixtures with the bootstrapped compiler and bundled UPX"]
 fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> Result<()> {
     let root = fixture()?;
     let baseline = root.path().join("baseline");
@@ -145,12 +195,20 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
             ])
             .arg(&baseline),
     )?;
-    let output = success(cli().current_dir(root.path()).args([
-        "--package",
-        "fixture-app",
-        "--bins",
-        "--locked",
-    ]))?;
+    let cache = tempfile::tempdir()?;
+    let output = success(
+        cli()
+            .current_dir(root.path())
+            .env("XDG_CACHE_HOME", cache.path())
+            .env("LOCALAPPDATA", cache.path())
+            .args([
+                "--package",
+                "fixture-app",
+                "--bins",
+                "--locked",
+                "--offline",
+            ]),
+    )?;
     eprintln!("{}", String::from_utf8_lossy(&output.stderr));
     let paths: Vec<_> = String::from_utf8(output.stdout)?
         .lines()
@@ -197,6 +255,13 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
     assert_eq!(published.len(), 1);
     let report: serde_json::Value =
         serde_json::from_slice(&fs::read(published[0].join("build.json"))?)?;
+    let compiler_record: serde_json::Value = serde_json::from_slice(&fs::read(
+        Path::new(env!("RREA_DOWNLOADS")).join("compiler.json"),
+    )?)?;
+    ensure!(
+        report["compiler"] == compiler_record,
+        "runtime did not reuse the bootstrapped toolchain"
+    );
     let artifacts = report["artifacts"]
         .as_array()
         .context("missing artifacts")?;
