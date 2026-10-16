@@ -1,6 +1,6 @@
 # cargo-rrea
 
-Build Rust release applications with Arkari obfuscation, metadata stripping, and packed shared libraries.
+Build Rust release applications with Arkari obfuscation, metadata stripping, and UPX packing.
 
 ## Requirements
 
@@ -43,15 +43,20 @@ cargo rrea build --help
 ```
 
 Executable paths are printed on stdout.
-Find the complete distribution, report, and logs under your project's `target/rrea/dist-<id>/` directory, or the equivalent custom Cargo target directory.
-Distribute the entire application directory, including its shared libraries—not just the executable.
-Executables remain unpacked; their Rust shared libraries are packed.
+The distribution contains only selected executables and required Rust shared libraries in `target/release/dist/`, beside the selected `Cargo.toml`.
+This destination does not follow a custom Cargo target directory.
+For a virtual workspace manifest, the destination is beneath the workspace root.
+Distribute the complete `dist` directory.
+Reports and logs stay in Cargo's target directory under `rrea/dist-<id>/`, outside the distribution.
+The pipeline packs executables and shared libraries.
+Their UPX header magic is `RREA`, so normal UPX decompression fails.
 
 ## Limits
 
 - Cross-compilation is not supported.
 - Required native/system libraries are not automatically bundled.
 - Rust strings and recognizable code can remain; UPX packing is reversible, not encryption.
+- Replacing the header magic is reversible and does not prevent manual unpacking.
 - Only build projects you trust: their build scripts and procedural macros execute during compilation.
 
 [Architecture and source development](docs/architecture.md)

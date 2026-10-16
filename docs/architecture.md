@@ -2,12 +2,12 @@
 
 ## Scope and build contract
 
-`cargo-rrea` is a Cargo subcommand for native release builds with Arkari LLVM passes, metadata stripping, and UPX-packed Rust shared libraries.
+`cargo-rrea` is a Cargo subcommand for native release builds with Arkari LLVM passes, metadata stripping, and UPX packing.
 `cargo rrea init` initializes the workspace manifest.
 `cargo rrea build --release` and direct `cargo-rrea build --release` invocation select the same pipeline.
 Build flags belong to the `build` subcommand, not the root command or `init`.
 `build` requires explicit `--release` (or `-r`); development and custom profiles are not supported.
-Executables remain unpacked.
+The pipeline packs executables and required Rust shared libraries.
 
 `init` changes only the workspace root manifest's release `debug` and `strip` values.
 It preserves unrelated settings, comments, and the panic strategy.
@@ -81,18 +81,29 @@ Generated shared libraries explicitly resolve the dynamic standard library for t
 Shared-library inclusion follows the current Cargo artifact messages, including metadata sidecars that identify hashed compiler outputs when Cargo reports a selected workspace library through a hard-linked root output.
 Build scripts and procedural macros remain host-side and do not receive the target LLVM passes.
 
-The pipeline strips nonessential metadata, packs shared libraries and the compiler's dynamic standard library, and leaves executables unpacked.
+The pipeline strips nonessential metadata and packs executables and required Rust shared libraries.
+Runtime inclusion follows the actual ELF/PE import-library graph from the selected executables.
+Only reachable generated Rust libraries and the compiler's dynamic standard library enter the distribution.
 Linux executables locate adjacent libraries through `$ORIGIN`.
 Required imports, exports, relocations, and unwind data remain intact.
 
 Publication follows stripping, metadata audits, UPX integrity checks, and decompression audits in a staging directory.
-Failed builds do not replace existing distribution directories.
-Distributions are published beneath the selected project's Cargo target directory as `rrea/dist-<id>/`.
+The pipeline then replaces UPX header magic with `RREA` and requires normal UPX decompression to fail.
+ELF header offsets come from the UPX trailer's overlay offset, not the program-header count.
+Compressed data and runtime EOF markers remain unchanged.
+Distributions contain only selected executables and required Rust shared libraries in `target/release/dist/`, relative to the selected manifest's directory.
+A virtual workspace manifest uses the workspace root.
+Custom Cargo target directories affect internal builds and reports, not the distribution destination.
+Publication locks the manifest-owned destination independently of the custom target directory.
+The complete runtime directory replaces the previous directory, so stale binaries and nonessential files do not remain.
+Compilation, audit, and packing failures preserve the previous distribution.
+Directory publication failures restore the previous directory when filesystem operations permit recovery.
 The CLI prints executable paths on stdout and diagnostics on stderr.
 
-Each distribution includes a `build.json` report and Cargo/compiler logs.
+Reports and Cargo/compiler logs stay under Cargo's target directory as `rrea/dist-<id>/`, outside the runtime distribution.
 The report records compiler release provenance, the UPX source commit and executable hash, packing status, artifact hashes, audit results, and known limits.
-Report-relative paths resolve against the published distribution directory.
+Artifact paths are absolute distribution paths.
+Log paths resolve against the report directory.
 
 ## Source ownership
 
@@ -126,6 +137,7 @@ Report-relative paths resolve against the published distribution directory.
   Rust runtime strings, type names, and recognizable code can remain.
   Metadata removal does not guarantee removal of every Rust fingerprint.
 - UPX packing is reversible, not encryption.
+  Replacing header magic blocks normal UPX decompression, not manual recovery.
   Integrity checks do not establish resistance to reverse engineering or application behavior beyond the exercised fixtures.
 - Application builds execute their own build scripts and procedural macros.
   The pipeline is not a sandbox for untrusted projects.
@@ -181,6 +193,8 @@ It uses the bootstrap compiler offline with an initially empty user cache.
 It compares both fixture executables against an ordinary build, including panic and unwind behavior.
 The fixture includes an allocating `no_std` dependency and its transitive `no_std` library.
 It also checks relocated loading, failure without the packed transitive dependency, and preservation of published output after compilation failure.
+The test covers member manifests, custom Cargo target directories, stale-file removal, and single-executable selection.
+It checks normal UPX rejection and byte-identical recovery after restoring the header magic.
 
 The maximum Clippy preset applies to the CLI, Cargo build script, shared modules, and tests.
 Run the uncapped all-target gate without changing lint levels or thresholds.

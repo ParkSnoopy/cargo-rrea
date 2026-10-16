@@ -6,6 +6,7 @@ use serde::Serialize;
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct Inspection {
+    pub libraries: Vec<String>,
     pub imports: Vec<(String, SymbolName)>,
     pub exports: Vec<SymbolName>,
     pub hardening: Hardening,
@@ -94,6 +95,11 @@ pub fn inspect(path: &Path, clean: bool, prohibited_paths: &[&Path]) -> Result<I
     if clean {
         validate_clean(&file, &data, prohibited_paths)?;
     }
+    let mut libraries = Vec::new();
+    for library in file.import_libraries()? {
+        libraries.push(std::str::from_utf8(library?.name())?.to_owned());
+    }
+    libraries.sort();
     let mut imports = Vec::new();
     for entry in file.imports()? {
         let entry = entry?;
@@ -121,35 +127,12 @@ pub fn inspect(path: &Path, clean: bool, prohibited_paths: &[&Path]) -> Result<I
     .map(str::to_owned)
     .collect();
     Ok(Inspection {
+        libraries,
         imports,
         exports,
         hardening,
         rust_string_hints,
     })
-}
-
-pub fn standalone(path: &Path) -> Result<()> {
-    let data = fs::read(path)?;
-    let file = object::File::parse(data.as_slice())?;
-    if let object::File::Elf64(elf) = &file {
-        use object::read::elf::{Dyn, ProgramHeader};
-        let endian = elf.endian();
-        ensure!(
-            !elf.elf_program_headers()
-                .iter()
-                .any(|header| { header.p_type(endian) == object::elf::PT_INTERP }),
-            "standalone executable still requires a dynamic loader; static native libraries are required"
-        );
-        if let Some((entries, _)) = elf.elf_section_table().dynamic(endian, data.as_slice())? {
-            ensure!(
-                !entries
-                    .iter()
-                    .any(|entry| entry.d_tag(endian) == object::elf::DT_NEEDED),
-                "standalone executable still requires shared libraries"
-            );
-        }
-    }
-    Ok(())
 }
 
 fn validate_clean(file: &object::File<'_>, data: &[u8], prohibited_paths: &[&Path]) -> Result<()> {
@@ -201,6 +184,10 @@ fn contains_text(data: &[u8], text: &str) -> bool {
 }
 
 pub fn same_runtime_metadata(before: &Inspection, after: &Inspection) -> Result<()> {
+    ensure!(
+        before.libraries == after.libraries,
+        "executable dependencies changed"
+    );
     ensure!(
         before.imports == after.imports,
         "executable imports changed"

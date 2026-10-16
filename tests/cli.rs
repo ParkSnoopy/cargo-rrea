@@ -275,6 +275,8 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
             "--bins",
             "--locked",
             "--offline",
+            "--manifest-path",
+            "app/Cargo.toml",
         ],
     ] {
         verify_native_pipeline(selection)
@@ -290,6 +292,12 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
     } else {
         "custom-target"
     });
+    let manifest_directory = if selection.is_empty() {
+        root.path().to_path_buf()
+    } else {
+        root.path().join("app")
+    };
+    let dist = manifest_directory.join("target/release/dist");
     let baseline = root.path().join("baseline");
     success(
         Command::new("cargo")
@@ -329,8 +337,8 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
         "expected both fixture executables, got {paths:?}"
     );
     verify_behavior(&baseline, &paths)?;
-    let distribution = verify_distribution(&target, &paths)?;
-    verify_relocation(root.path(), &paths)?;
+    let distribution = verify_distribution(&target, &dist, &paths)?;
+    verify_relocation(root.path(), &distribution, &paths)?;
     let report = &distribution.report;
     ensure!(
         report["obfuscation"]
@@ -358,12 +366,37 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
         !log.contains("--crate-name\",\"build_script_build"),
         "build script received target passes"
     );
+    verify_republication(
+        &manifest_directory,
+        &target,
+        &baseline,
+        &paths,
+        &distribution,
+    )?;
+    Ok(())
+}
+
+fn verify_republication(
+    manifest_directory: &Path,
+    target: &Path,
+    baseline: &Path,
+    paths: &[PathBuf],
+    distribution: &Distribution,
+) -> Result<()> {
+    let dist = manifest_directory.join("target/release/dist");
+    fs::write(dist.join("stale.pdb"), b"not a runtime artifact")?;
     let repeated = success(
         cargo_cli()?
-            .current_dir(root.path())
-            .env("CARGO_TARGET_DIR", &target)
-            .args(["build", "--release", "--offline"])
-            .args(selection),
+            .current_dir(manifest_directory)
+            .env("CARGO_TARGET_DIR", target)
+            .args([
+                "build",
+                "--release",
+                "--offline",
+                "--package",
+                "fixture-app",
+                "--bins",
+            ]),
     )?;
     ensure!(
         String::from_utf8(repeated.stdout)?
@@ -373,8 +406,37 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
             == paths,
         "rebuild changed executable paths"
     );
-    verify_behavior(&baseline, &paths)?;
-    verify_failed_publication(root.path(), &target, &distribution)?;
+    ensure!(
+        !dist.join("stale.pdb").exists(),
+        "rebuild retained a nonessential file"
+    );
+    verify_behavior(baseline, paths)?;
+    verify_failed_publication(manifest_directory, target, distribution)?;
+    success(
+        cargo_cli()?
+            .current_dir(manifest_directory)
+            .env("CARGO_TARGET_DIR", target)
+            .args([
+                "build",
+                "--release",
+                "--offline",
+                "--package",
+                "fixture-app",
+                "--bin",
+                "secondary",
+            ]),
+    )?;
+    ensure!(
+        fs::read_dir(&dist)?.count() == 4
+            && !dist
+                .join(format!("fixture{}", std::env::consts::EXE_SUFFIX))
+                .exists(),
+        "single-binary build retained unselected runtime artifacts"
+    );
+    verify_behavior(
+        baseline,
+        &[dist.join(format!("secondary{}", std::env::consts::EXE_SUFFIX))],
+    )?;
     Ok(())
 }
 
@@ -430,7 +492,7 @@ struct Distribution {
     report: serde_json::Value,
 }
 
-fn verify_distribution(target: &Path, paths: &[PathBuf]) -> Result<Distribution> {
+fn verify_distribution(target: &Path, dist: &Path, paths: &[PathBuf]) -> Result<Distribution> {
     let published = distributions(target)?;
     ensure!(
         published.len() == 1,
@@ -449,8 +511,8 @@ fn verify_distribution(target: &Path, paths: &[PathBuf]) -> Result<Distribution>
         .as_array()
         .context("missing artifacts")?;
     ensure!(
-        artifacts.len() == 2,
-        "expected two standalone executables, got {artifacts:?}"
+        artifacts.len() == 5,
+        "expected two executables and three runtime libraries, got {artifacts:?}"
     );
     ensure!(
         report["upx"]["repository"] == "upx/upx",
@@ -476,15 +538,23 @@ fn verify_distribution(target: &Path, paths: &[PathBuf]) -> Result<Distribution>
             "missing RREA packing signature: {path:?}"
         );
         ensure!(
-            paths.contains(&path) && path.parent() == Some(target.join("release").as_path()),
-            "executable is not in the normal release directory: {path:?}"
+            path.parent() == Some(dist),
+            "runtime artifact is not in the manifest's distribution directory: {path:?}"
         );
         verify_packing(&path, artifact)?;
-        published_paths.push(path.clone());
+        published_paths.push(path);
     }
     ensure!(
-        fs::read_dir(target.join("release"))?.count() == paths.len(),
-        "release directory contains files other than the selected executables"
+        fs::read_dir(dist)?.count() == published_paths.len(),
+        "distribution contains nonessential files"
+    );
+    ensure!(
+        paths.iter().all(|path| published_paths.contains(path)),
+        "report omits an executable"
+    );
+    ensure!(
+        fs::read_dir(&published[0])?.count() == 3,
+        "report directory contains runtime artifacts"
     );
     Ok(Distribution {
         path: published[0].clone(),
@@ -508,16 +578,10 @@ fn verify_packing(path: &Path, artifact: &serde_json::Value) -> Result<()> {
     let mut data = fs::read(path)?;
     let file = object::File::parse(data.as_slice())?;
     let offsets = match file {
-        object::File::Elf64(elf) => {
-            use object::read::elf::FileHeader;
-            let header = elf.elf_header();
-            let endian = elf.endian();
-            vec![
-                usize::try_from(header.e_phoff(endian))?
-                    + usize::from(header.e_phentsize(endian)) * usize::from(header.e_phnum(endian))
-                    + 4,
-                data.len() - 36,
-            ]
+        object::File::Elf64(_) => {
+            let overlay =
+                u32::from_le_bytes(*data.last_chunk::<4>().context("missing overlay offset")?);
+            vec![usize::try_from(overlay)? - 8, data.len() - 36]
         }
         object::File::Pe64(_) => {
             vec![
@@ -552,42 +616,24 @@ fn verify_packing(path: &Path, artifact: &serde_json::Value) -> Result<()> {
         artifact["unpacked_sha256"] == digest,
         "packing changed the original executable"
     );
-    let file = object::File::parse(unpacked.as_slice())?;
-    if let object::File::Elf64(elf) = file {
-        use object::read::elf::{Dyn, ProgramHeader};
-        let endian = elf.endian();
-        ensure!(
-            !elf.elf_program_headers()
-                .iter()
-                .any(|header| header.p_type(endian) == object::elf::PT_INTERP),
-            "executable requires a dynamic loader"
-        );
-        if let Some((entries, _)) = elf
-            .elf_section_table()
-            .dynamic(endian, unpacked.as_slice())?
-        {
-            ensure!(
-                !entries
-                    .iter()
-                    .any(|entry| entry.d_tag(endian) == object::elf::DT_NEEDED),
-                "executable requires shared libraries"
-            );
-        }
-    }
     Ok(())
 }
 
-fn verify_relocation(root: &Path, paths: &[PathBuf]) -> Result<()> {
-    // Copy each executable alone to exclude dependencies on adjacent build artifacts.
+fn verify_relocation(root: &Path, distribution: &Distribution, paths: &[PathBuf]) -> Result<()> {
+    // Copy only runtime artifacts to exclude dependencies on build output and logs.
     let relocated = root.join("relocated");
+    fs::create_dir_all(&relocated)?;
+    for artifact in &distribution.artifacts {
+        fs::copy(
+            artifact,
+            relocated.join(artifact.file_name().context("missing artifact name")?),
+        )?;
+    }
     for path in paths {
         let filename = path.file_name().context("missing executable name")?;
-        let directory = relocated.join(filename);
-        fs::create_dir_all(&directory)?;
-        fs::copy(path, directory.join(filename))?;
         let expected = success(Command::new(path).arg("7"))?;
         let actual = success(
-            Command::new(directory.join(filename))
+            Command::new(relocated.join(filename))
                 .current_dir(root)
                 .env_remove("LD_LIBRARY_PATH")
                 .env_remove("LD_PRELOAD")
@@ -600,6 +646,25 @@ fn verify_relocation(root: &Path, paths: &[PathBuf]) -> Result<()> {
             expected.stdout
         );
     }
+    let dependency = distribution
+        .artifacts
+        .iter()
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().contains("fixture_shared"))
+        })
+        .context("missing transitive runtime library")?;
+    fs::remove_file(relocated.join(dependency.file_name().context("missing library name")?))?;
+    let missing =
+        Command::new(relocated.join(paths[0].file_name().context("missing executable name")?))
+            .env_remove("LD_LIBRARY_PATH")
+            .env_remove("LD_PRELOAD")
+            .arg("7")
+            .output()?;
+    ensure!(
+        !missing.status.success(),
+        "relocated executable loaded a library outside its bundle"
+    );
     Ok(())
 }
 
