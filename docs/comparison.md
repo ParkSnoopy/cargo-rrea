@@ -2,7 +2,7 @@
 
 ## Scope
 
-This case study compares two supplied reverse-engineering reports about `b116`:
+This case study compares two supplied reverse-engineering reports about [`b116`](https://github.com/ParkSnoopy/base116_cli):
 
 - **base:** “Architecture of `b116`”, from `cargo build --release`.
 - **rrea:** “Architecture & Reverse Engineering Analysis: `b116`”, from `cargo rrea build --mangle-library --release`.
