@@ -87,6 +87,11 @@ Only reachable generated Rust libraries and the compiler's dynamic standard libr
 Linux executables locate adjacent libraries through `$ORIGIN`.
 Required imports, exports, relocations, and unwind data remain intact.
 
+With `--mangle-library`, Linux linking reserves dynamic-string space for the longer hashed names using redundant `/.` components in the `$ORIGIN` search path.
+The reserve scales with the dependency graph and includes alignment slack.
+Sanitization reduces that padded path back to `$ORIGIN` before rebuilding loader metadata, without changing unrelated search paths.
+This keeps code, data, and unwind addresses unchanged while leaving loader metadata below the UPX stub, including for tightly packed ELF layouts.
+
 Publication follows stripping, metadata audits, UPX integrity checks, and decompression audits in a staging directory.
 The pipeline then replaces UPX header magic with `RREA` and requires normal UPX decompression to fail.
 ELF header offsets come from the UPX trailer's overlay offset, not the program-header count.
@@ -194,6 +199,7 @@ It compares both fixture executables against an ordinary build, including panic 
 The fixture includes an allocating `no_std` dependency and its transitive `no_std` library.
 It also checks relocated loading, failure without the packed transitive dependency, and preservation of published output after compilation failure.
 The test covers member manifests, custom Cargo target directories, stale-file removal, and single-executable selection.
+The mangled Linux case uses a tightly packed ELF layout and checks that search-path padding is removed before packing.
 It checks normal UPX rejection and byte-identical recovery after restoring the header magic.
 
 The maximum Clippy preset applies to the CLI, Cargo build script, shared modules, and tests.

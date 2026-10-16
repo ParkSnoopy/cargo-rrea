@@ -316,6 +316,13 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
             .arg(&baseline),
     )?;
     success(cargo_cli()?.current_dir(root.path()).arg("init"))?;
+    if cfg!(target_os = "linux") && selection.contains(&"--mangle-library") {
+        fs::create_dir_all(root.path().join(".cargo"))?;
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/elf-tight-layout.toml"),
+            root.path().join(".cargo/config.toml"),
+        )?;
+    }
     let cache = tempfile::tempdir()?;
     let output = success(
         cargo_cli()?
@@ -687,6 +694,19 @@ fn verify_packing(path: &Path, artifact: &serde_json::Value) -> Result<()> {
             .arg(&restored),
     )?;
     let unpacked = fs::read(recovered)?;
+    if let object::File::Elf64(elf) = object::File::parse(unpacked.as_slice())? {
+        let table = elf
+            .elf_section_table()
+            .dynamic_table(elf.endian(), unpacked.as_slice())?;
+        for entry in &table {
+            if matches!(entry.tag, object::elf::DT_RPATH | object::elf::DT_RUNPATH) {
+                ensure!(
+                    !table.string(entry)?.windows(3).any(|bytes| bytes == b"/./"),
+                    "ELF search-path padding remains"
+                );
+            }
+        }
+    }
     ensure!(
         artifact["unpacked_sha256"] == digest(&unpacked)?,
         "packing changed the original executable"

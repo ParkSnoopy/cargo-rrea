@@ -77,6 +77,22 @@ fn rewrite_elf(data: &[u8], names: &BTreeMap<String, String>) -> Result<Vec<u8>>
         .context("missing ELF dynamic table")?
     {
         if let Dynamic::String { tag, val } = entry
+            && matches!(*tag, object::elf::DT_RPATH | object::elf::DT_RUNPATH)
+        {
+            let paths = std::str::from_utf8(val.as_slice())?
+                .split(':')
+                .map(|path| {
+                    if path.trim_end_matches("/.") == "$ORIGIN" {
+                        "$ORIGIN"
+                    } else {
+                        path
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(":");
+            *val = paths.into_bytes().into();
+        }
+        if let Dynamic::String { tag, val } = entry
             && matches!(*tag, object::elf::DT_NEEDED | object::elf::DT_SONAME)
             && let Some(name) = names.get(std::str::from_utf8(val.as_slice())?)
         {

@@ -16,6 +16,7 @@ use crate::{BuildOptions, project};
 #[derive(Deserialize, Serialize)]
 pub struct Policy {
     sources: BTreeMap<PathBuf, String>,
+    mangle_library: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -104,7 +105,10 @@ impl Policy {
             }
         }
 
-        Ok(Self { sources })
+        Ok(Self {
+            sources,
+            mangle_library: options.mangle_library,
+        })
     }
 }
 
@@ -195,7 +199,14 @@ pub fn adapt(
     args.push("-Zembed-metadata=yes".into());
     args.push("-Cprefer-dynamic=yes".into());
     if cfg!(target_os = "linux") {
-        args.push("-Clink-arg=-Wl,-rpath,$ORIGIN".into());
+        // Reserve 16 bytes per possible renamed dependency, plus alignment slack.
+        // Repeated /. components resolve to the same directory and are removed later.
+        let padding = if policy.mangle_library {
+            "/.".repeat(8 * (policy.sources.len() + 4))
+        } else {
+            String::new()
+        };
+        args.push(format!("-Clink-arg=-Wl,-rpath,$ORIGIN{padding}").into());
     }
     let Some(identity) = direct else {
         return Ok(None);

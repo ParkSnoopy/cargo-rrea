@@ -6,6 +6,9 @@ extern crate alloc;
 
 use alloc::{format, string::String};
 
+// Retain read-only data when testing packing without separate code segments.
+static OFFSETS: [f64; 2048] = [0.0625; 2048];
+
 #[derive(Debug)]
 enum Value {
     Even(u32),
@@ -21,6 +24,7 @@ pub fn calculate(input: u32) -> u32 {
 pub fn describe(input: u32) -> String {
     let value = if input & 1 == 0 { Value::Even(input) } else { Value::Odd(input) };
     let observed = match value { Value::Even(value) | Value::Odd(value) => value };
-    let float = f64::from(core::hint::black_box(input)) * 1.375 + 0.0625;
+    let float = f64::from(core::hint::black_box(input)) * 1.375
+        + core::hint::black_box(&OFFSETS)[input as usize % OFFSETS.len()];
     format!("{value:?}:{observed}:{}:{float:.4}:Rust string\0with NUL:文字", calculate(input))
 }
