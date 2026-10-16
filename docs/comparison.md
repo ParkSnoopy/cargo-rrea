@@ -4,10 +4,10 @@
 
 This case study compares two supplied reverse-engineering reports about `b116`:
 
-- **base:** `_tmp/b116_arch.base.md`, from `cargo build --release`.
-- **rrea:** `_tmp/b116_arch.rrea.md`, from `cargo rrea build --mangle-library --release`.
+- **base:** “Architecture of `b116`”, from `cargo build --release`.
+- **rrea:** “Architecture & Reverse Engineering Analysis: `b116`”, from `cargo rrea build --mangle-library --release`.
 
-These are local input reports, not published documentation dependencies.
+The original reports are not included in the maintained documentation.
 Section references below identify evidence in those reports.
 This comparison does not rerun their binary analysis or independently validate their tool results.
 
@@ -28,6 +28,10 @@ The strongest supported conclusion is **added static-analysis friction, not prev
 The protected report describes work on loader layout, unpacked memory, and flattened control flow before discussing application internals.
 Nevertheless, it still identifies the program, interface, core-library role, and specific routines.
 Packing and mangled filenames did not keep those facts hidden.
+
+Supplied terminal screenshots also show plaintext UPX branding, remaining `UPX!` bytes beside `RREA`, and Rust runtime names in Ghidra relocation diagnostics.
+These are concrete fingerprint leaks despite stock UPX refusing to unpack the executable.
+Their remediation is planned in [follow-up work](todo.md#fix-immediate-packer-and-language-fingerprints).
 
 The [build pipeline](../src/build.rs) explicitly uses UPX and replaces its header magic with `RREA`.
 This is reversible format masking, not evidence of encryption or a separately engineered anti-debugging system.
