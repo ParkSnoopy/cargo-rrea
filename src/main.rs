@@ -31,11 +31,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    /// Disable release debug information and strip symbols in Cargo.toml.
-    Init {
-        #[arg(long, value_name = "PATH")]
-        manifest_path: Option<PathBuf>,
-    },
     /// Build release executables and required libraries with Arkari and UPX.
     Build(BuildOptions),
 }
@@ -106,7 +101,6 @@ fn run() -> Result<()> {
     }
     let cli = Cli::parse_from(args);
     match cli.command {
-        Action::Init { manifest_path } => project::init(manifest_path.as_deref()),
         Action::Build(options) => build::run(&options),
     }
 }

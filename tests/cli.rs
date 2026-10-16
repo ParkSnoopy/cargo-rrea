@@ -1,4 +1,4 @@
-//! Integration boundaries for manifest initialization and the native pipeline.
+//! Integration boundaries for temporary build profiles and the native pipeline.
 
 use std::{
     fmt::Write as _,
@@ -63,64 +63,24 @@ fn fixture() -> Result<tempfile::TempDir> {
 }
 
 #[test]
-fn init_updates_only_the_workspace_root_and_rejects_invalid_input() -> Result<()> {
+fn build_rejects_invalid_manifests_without_modifying_them() -> Result<()> {
     let root = fixture()?;
     let manifest = root.path().join("Cargo.toml");
     let member = root.path().join("app/Cargo.toml");
     let member_before = fs::read(&member)?;
-    success(cli().args(["rrea", "init", "--manifest-path"]).arg(&member))?;
-    let updated = fs::read_to_string(&manifest)?;
+    fs::write(&manifest, "[workspace\n")?;
+    let invalid = cli()
+        .args(["build", "--release", "--manifest-path"])
+        .arg(&member)
+        .output()?;
+    ensure!(!invalid.status.success(), "build accepted invalid TOML");
     ensure!(
-        updated.contains("# Preserve the application's panic strategy."),
-        "init removed the panic strategy comment"
-    );
-    let document = updated.parse::<toml_edit::DocumentMut>()?;
-    ensure!(
-        document["profile"]["release"]["debug"].as_integer() == Some(0),
-        "init did not disable release debug information: {document}"
-    );
-    ensure!(
-        document["profile"]["release"]["strip"].as_str() == Some("symbols"),
-        "init did not enable symbol stripping: {document}"
-    );
-    ensure!(
-        document["profile"]["release"]["panic"].as_str() == Some("unwind"),
-        "init changed the panic strategy: {document}"
+        fs::read_to_string(&manifest)? == "[workspace\n",
+        "build changed invalid TOML"
     );
     ensure!(
         fs::read(&member)? == member_before,
-        "init changed the member manifest"
-    );
-    let repeated = success(cli().args(["init", "--manifest-path"]).arg(&manifest))?;
-    ensure!(
-        String::from_utf8(repeated.stdout)?.starts_with("unchanged "),
-        "repeated init did not report unchanged content"
-    );
-    ensure!(
-        fs::read_to_string(&manifest)? == updated,
-        "init is not idempotent"
-    );
-    fs::write(&manifest, "[workspace\n")?;
-    let invalid = cli()
-        .args(["init", "--manifest-path"])
-        .arg(&manifest)
-        .output()?;
-    ensure!(!invalid.status.success(), "init accepted invalid TOML");
-    ensure!(
-        fs::read_to_string(&manifest)? == "[workspace\n",
-        "init changed invalid TOML"
-    );
-    ensure!(
-        !cli().arg("--definitely-unknown").output()?.status.success(),
-        "CLI accepted an unknown option"
-    );
-    ensure!(
-        !cli()
-            .args(["--workspace", "init"])
-            .output()?
-            .status
-            .success(),
-        "init accepted build selections"
+        "failed build changed the member manifest"
     );
     Ok(())
 }
@@ -129,13 +89,13 @@ fn init_updates_only_the_workspace_root_and_rejects_invalid_input() -> Result<()
 fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<()> {
     for args in [
         vec![],
+        vec!["init"],
+        vec!["rrea", "init"],
         vec!["--bins"],
         vec!["build"],
         vec!["build", "--release", "--definitely-unknown"],
         vec!["build", "--release", "--bin", "fixture", "--bins"],
         vec!["build", "--release", "--exclude", "fixture-app"],
-        vec!["init", "--release"],
-        vec!["init", "--mangle-library"],
         vec!["build", "--mangle-library"],
     ] {
         let output = cli().args(&args).output()?;
@@ -145,6 +105,11 @@ fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    let root_help = success(cli().arg("--help"))?;
+    ensure!(
+        !String::from_utf8(root_help.stdout)?.contains("init"),
+        "help still advertises manifest initialization"
+    );
     let output = success(cargo_cli()?.args(["build", "--help"]))?;
     let help = String::from_utf8(output.stdout)?;
     for flag in [
@@ -321,6 +286,8 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
 
 fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
     let root = fixture()?;
+    let manifest = fs::read(root.path().join("Cargo.toml"))?;
+    let member = fs::read(root.path().join("app/Cargo.toml"))?;
     let target = root.path().join(if selection.is_empty() {
         "target"
     } else {
@@ -345,7 +312,7 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
             ])
             .arg(&baseline),
     )?;
-    success(cargo_cli()?.current_dir(root.path()).arg("init"))?;
+
     if cfg!(target_os = "linux") && selection.contains(&"--mangle-library") {
         fs::create_dir_all(root.path().join(".cargo"))?;
         fs::copy(
@@ -364,11 +331,7 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
             .args(["build", "--release"])
             .args(selection),
     )?;
-    writeln!(
-        io::stderr().lock(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    )?;
+    io::stderr().write_all(&output.stderr)?;
     let paths: Vec<_> = String::from_utf8(output.stdout)?
         .lines()
         .map(std::path::PathBuf::from)
@@ -398,10 +361,9 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
         .as_str()
         .context("missing invocation log")?;
     let log = fs::read_to_string(distribution.path.join(invocation_log))?;
-    ensure!(log.contains("--irobf-fla"), "missing flattening pass");
     ensure!(
-        log.contains("fixture_logic"),
-        "dependency was not obfuscated"
+        log.contains("--irobf-fla") && log.contains("fixture_logic"),
+        "dependency obfuscation or flattening pass is missing"
     );
     ensure!(
         !log.contains("--crate-name\",\"fixture_literal"),
@@ -418,6 +380,11 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
         &paths,
         &distribution,
     )?;
+    ensure!(
+        fs::read(root.path().join("Cargo.toml"))? == manifest
+            && fs::read(root.path().join("app/Cargo.toml"))? == member,
+        "successful or failed build changed a project manifest"
+    );
     Ok(())
 }
 

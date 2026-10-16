@@ -100,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-rrea"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "cargo_metadata",

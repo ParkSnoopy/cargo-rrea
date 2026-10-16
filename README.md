@@ -26,12 +26,10 @@ An empty toolchain cache requires internet access.
 Run inside the Rust project you want to build:
 
 ```sh
-cargo rrea init
 cargo rrea build --release
 ```
 
-`init` sets release debug information to zero and enables symbol stripping in the workspace manifest.
-It preserves unrelated settings and comments.
+`build` temporarily disables debug information and strips symbols without editing `Cargo.toml`.  
 `build` requires `--release` (or `-r`); development profiles are not supported.
 
 Select a package and executable, or build with an already cached toolchain offline:

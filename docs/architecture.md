@@ -3,15 +3,15 @@
 ## Scope and build contract
 
 `cargo-rrea` is a Cargo subcommand for native release builds with Arkari LLVM passes, metadata stripping, and UPX packing.
-`cargo rrea init` initializes the workspace manifest.
+
 `cargo rrea build --release` and direct `cargo-rrea build --release` invocation select the same pipeline.
-Build flags belong to the `build` subcommand, not the root command or `init`.
+Build flags belong to the `build` subcommand, not the root command.
 `build` requires explicit `--release` (or `-r`); development and custom profiles are not supported.
 The pipeline packs executables and required Rust shared libraries.
 
-`init` changes only the workspace root manifest's release `debug` and `strip` values.
-It preserves unrelated settings, comments, and the panic strategy.
-Repeated initialization does not rewrite unchanged content; invalid TOML fails without modifying the manifest.
+`build` applies `debug = 0` and `strip = "symbols"` through command-local Cargo configuration.
+It does not edit any `Cargo.toml`, including on failed builds.
+Project profile settings, comments, and the panic strategy remain unchanged on disk.
 
 Application builds select the acquired Arkari compiler and matching sysroot without changing the active Rust installation.
 A compiler failure stops the build without ordinary-rustc fallback.
@@ -119,8 +119,8 @@ Log paths resolve against the report directory.
 
 | File | Responsibility |
 | --- | --- |
-| [src/main.rs](../src/main.rs) | Cargo invocation, initialization, and build-selection arguments |
-| [src/project.rs](../src/project.rs) | Workspace discovery and format-preserving manifest edits |
+| [src/main.rs](../src/main.rs) | Cargo invocation and build-selection arguments |
+| [src/project.rs](../src/project.rs) | Cargo command selection and shared process/lock access |
 | [src/support.rs](../src/support.rs) | Shared child-process checks and file locks |
 | [build.rs](../build.rs) | Compiler bootstrap, pinned UPX source validation, native compilation, and embedding |
 | [thirdparty/upx-source.json](../thirdparty/upx-source.json) | UPX revision and recursive source-content digest for checkout and crate builds |
@@ -129,7 +129,7 @@ Log paths resolve against the report directory.
 | [src/dynamic.rs](../src/dynamic.rs) | Dependency selection and compiler argument adaptation |
 | [src/build.rs](../src/build.rs) | Obfuscation, artifact collection, stripping, packing, audits, and publication |
 | [src/audit.rs](../src/audit.rs) | ELF/PE metadata, imports, exports, hardening headers, and residual Rust string hints |
-| [tests/cli.rs](../tests/cli.rs) | Bootstrap, initialization, failure boundaries, runtime parity, relocation, and required packed dependencies |
+| [tests/cli.rs](../tests/cli.rs) | Bootstrap, temporary profiles, manifest preservation, runtime parity, relocation, and required packed dependencies |
 
 ## Compatibility and limits
 
@@ -197,8 +197,9 @@ cargo deny check licenses
 cargo package --locked
 ```
 
-The regular tests verify the bootstrapped compiler and matching sysroot, initialization, archive extraction boundaries, detached offline cache misses, unsupported targets, and UPX cache integrity.
-The ignored native test exercises the actual `cargo rrea init` and `cargo rrea build --release` workflow for both default workspace selection and an explicitly selected executable package.
+The regular tests verify the bootstrapped compiler and matching sysroot, CLI and invalid-manifest rejection, archive extraction boundaries, detached offline cache misses, unsupported targets, and UPX cache integrity.
+The ignored native test exercises `cargo rrea build --release` directly for both default workspace selection and an explicitly selected executable package.
+Its project requests debug information and unstripped output, and both successful and failed builds must preserve workspace and member manifests byte for byte.
 It uses the bootstrap compiler offline with an initially empty user cache.
 It compares both fixture executables against an ordinary build, including panic and unwind behavior.
 The fixture includes an allocating `no_std` dependency and its transitive `no_std` library.
