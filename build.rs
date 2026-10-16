@@ -183,7 +183,6 @@ fn main() -> Result<()> {
         writeln!(output, "cargo:rerun-if-env-changed={variable}")?;
     }
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
-    prepare_toolchain(&out_dir, &mut output)?;
     // Cargo can reuse OUT_DIR when switching between a checkout and its extracted crate.
     let source_key = toolchain::digest(
         source
@@ -214,7 +213,10 @@ fn main() -> Result<()> {
             ));
         }
     }
-    checked(&mut configure)?;
+    checked(&mut configure).context(
+        "UPX configuration requires CMake, Ninja, and working C and C++ compilers; install these prerequisites and check CC/CXX and CFLAGS/CXXFLAGS",
+    )?;
+    prepare_toolchain(&out_dir, &mut output)?;
     checked(
         Command::new("cmake")
             .arg("--build")

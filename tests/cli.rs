@@ -212,6 +212,36 @@ fn cargo_bootstrap_prepares_a_runnable_matching_toolchain() -> Result<()> {
 }
 
 #[test]
+#[ignore = "compiles an isolated cargo install with a missing native compiler"]
+fn cargo_install_rejects_missing_native_compiler_before_downloading() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let output = Command::new("cargo")
+        .args(["install", "--debug", "--offline", "--locked", "--path"])
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("--root")
+        .arg(root.path().join("installation"))
+        .arg("--target-dir")
+        .arg(root.path().join("target"))
+        .env_remove("CARGO_BUILD_BUILD_DIR")
+        .env("CC", root.path().join("missing-c-compiler"))
+        .env("CARGO_NET_OFFLINE", "true")
+        .output()?;
+    let stderr = String::from_utf8(output.stderr)?;
+    ensure!(!output.status.success(), "missing compiler was accepted");
+    ensure!(
+        stderr.contains("UPX configuration requires CMake, Ninja, and working C and C++ compilers"),
+        "native prerequisites were not diagnosed before compiler acquisition: {stderr}"
+    );
+    ensure!(
+        !root.path().join("target/downloads").exists()
+            && !stderr.contains("resolving ParkSnoopy/")
+            && !stderr.contains("downloading compiler"),
+        "missing native prerequisites reached compiler acquisition: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
 fn offline_cache_miss_and_unsupported_targets_do_not_publish() -> Result<()> {
     let root = fixture()?;
     let cache = tempfile::tempdir()?;
