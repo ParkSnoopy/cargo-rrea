@@ -209,6 +209,7 @@ fn prepare_build(
         ("profile.release.debug", "0".to_owned()),
         ("profile.release.strip", "\"symbols\"".to_owned()),
         ("profile.release.incremental", "false".to_owned()),
+        ("profile.release.lto", "false".to_owned()),
     ] {
         command.arg("--config").arg(format!("{key}={value}"));
     }
@@ -801,6 +802,12 @@ fn validate_flags(args: &[OsString]) -> Result<()> {
             value.strip_prefix("-C")
         };
         if let Some(option) = codegen {
+            let (name, value) = option.split_once('=').unwrap_or((option, "yes"));
+            ensure!(
+                !matches!(name, "lto" | "linker-plugin-lto")
+                    || matches!(value, "n" | "no" | "off" | "false"),
+                "{option} conflicts with the shared-library build layout; remove explicit LTO compiler flags"
+            );
             if let Some(debug) = option.strip_prefix("debuginfo=") {
                 ensure!(
                     matches!(debug, "0" | "none"),
@@ -860,6 +867,10 @@ mod tests {
             vec!["-Cstrip=none"],
             vec!["-Cllvm-args=--irobf=false"],
             vec!["--sysroot", "/other"],
+            vec!["-C", "linker-plugin-lto"],
+            vec!["-Clinker-plugin-lto=yes"],
+            vec!["-C", "lto=thin"],
+            vec!["-Clto=fat"],
         ] {
             let args: Vec<_> = args.into_iter().map(OsString::from).collect();
             assert!(validate_flags(&args).is_err());
@@ -869,6 +880,8 @@ mod tests {
             "debuginfo=0",
             "-Cstrip=symbols",
             "-Clink-arg=-pthread",
+            "-Clto=off",
+            "-Clinker-plugin-lto=no",
         ]
         .into_iter()
         .map(OsString::from)

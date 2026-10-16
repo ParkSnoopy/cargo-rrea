@@ -81,6 +81,11 @@ Generated shared libraries explicitly resolve the dynamic standard library for t
 Shared-library inclusion follows the current Cargo artifact messages, including metadata sidecars that identify hashed compiler outputs when Cargo reports a selected workspace library through a hard-linked root output.
 Build scripts and procedural macros remain host-side and do not receive the target LLVM passes.
 
+Application builds override the release profile's cross-crate LTO setting with `lto = false` without editing the project's manifest.
+Cargo must emit native objects for dependencies that the wrapper also builds as shared libraries, rather than bitcode-only linker-plugin inputs.
+This retains Cargo's default local ThinLTO where applicable and all fixed obfuscation passes.
+Explicit compiler flags that enable LTO or linker-plugin LTO are rejected because they conflict with this shared-library layout.
+
 The pipeline strips nonessential metadata and packs executables and required Rust shared libraries.
 Runtime inclusion follows the actual ELF/PE import-library graph from the selected executables.
 Only reachable generated Rust libraries and the compiler's dynamic standard library enter the distribution.

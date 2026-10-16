@@ -5,3 +5,4 @@ resolver = "3"
 [profile.release]
 # Preserve the application's panic strategy.
 panic = "unwind"
+lto = true
