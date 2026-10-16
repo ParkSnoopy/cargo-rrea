@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
@@ -14,11 +15,12 @@ use crate::{BuildOptions, project};
 
 #[derive(Deserialize, Serialize)]
 pub struct Policy {
-    sources: Vec<PathBuf>,
+    sources: BTreeMap<PathBuf, String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Library {
+    pub identity: String,
     pub rlib: PathBuf,
     pub dylib: PathBuf,
 }
@@ -87,19 +89,21 @@ impl Policy {
                 }
             }
         }
-        let mut sources = Vec::new();
+        let mut sources = BTreeMap::new();
         for package in &metadata.packages {
             if !libraries.contains(&package.id) {
                 continue;
             }
             for target in &package.targets {
                 if target.is_lib() && !target.kind.contains(&TargetKind::ProcMacro) {
-                    sources.push(target.src_path.as_std_path().canonicalize()?);
+                    sources.insert(
+                        target.src_path.as_std_path().canonicalize()?,
+                        format!("{}@{}:{}", package.name, package.version, target.name),
+                    );
                 }
             }
         }
-        sources.sort();
-        sources.dedup();
+
         Ok(Self { sources })
     }
 }
@@ -147,7 +151,7 @@ pub fn adapt(
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
         })
         .filter_map(|arg| Path::new(arg).canonicalize().ok())
-        .any(|source| policy.sources.contains(&source));
+        .find_map(|source| policy.sources.get(&source));
     let libraries = read_libraries(library_log)?;
     for argument in args.iter_mut() {
         let Some(text) = argument.to_str() else {
@@ -193,9 +197,9 @@ pub fn adapt(
     if cfg!(target_os = "linux") {
         args.push("-Clink-arg=-Wl,-rpath,$ORIGIN".into());
     }
-    if !direct {
+    let Some(identity) = direct else {
         return Ok(None);
-    }
+    };
     let kinds: Vec<_> = args
         .windows(2)
         .filter(|pair| pair[0] == "--crate-type")
@@ -213,6 +217,7 @@ pub fn adapt(
     let extra = value(args, "-Cextra-filename").unwrap_or("");
     let stem = format!("{name}{extra}");
     let library = Library {
+        identity: identity.clone(),
         rlib: output.join(format!("lib{stem}.rlib")),
         dylib: output.join(if cfg!(windows) {
             format!("{stem}.dll")

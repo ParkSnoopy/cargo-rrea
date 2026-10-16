@@ -13,7 +13,7 @@ use fs2::FileExt;
 use object::{Object, ObjectSection};
 use serde::Serialize;
 
-use crate::{BuildOptions, audit, dynamic, project, tools};
+use crate::{BuildOptions, audit, dynamic, mangle, project, tools};
 
 const OBFUSCATION: &[&str] = &[
     "-Cllvm-args=--irobf",
@@ -77,19 +77,20 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         .prefix(".staging-")
         .tempdir_in(&root)?;
     let executables: Vec<_> = artifacts.keys().cloned().collect();
-    add_runtime_libraries(
+    let names = add_runtime_libraries(
         &mut artifacts,
         &active_rlibs,
         &prepared.directory.join("libraries.jsonl"),
         sysroot,
-        target,
+        options,
+        &compiler_version,
     )?;
     let prohibited: Vec<_> = prepared
         .prohibited_paths
         .iter()
         .map(PathBuf::as_path)
         .collect();
-    let mut outputs = prepare_artifacts(artifacts, staging.path(), &tools, target, &prohibited)?;
+    let mut outputs = prepare_artifacts(artifacts, staging.path(), &tools, &names, &prohibited)?;
     for output in &mut outputs {
         output.path = distribution.join(&output.path);
     }
@@ -99,6 +100,7 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         upx: &tools.upx_build,
         compiler_version: &compiler_version,
         obfuscation: OBFUSCATION,
+        mangle_library: options.mangle_library,
         cargo_log: Path::new("cargo.jsonl"),
         compiler_invocations: Path::new("rustc-invocations.jsonl"),
         artifacts: &outputs,
@@ -228,31 +230,44 @@ fn add_runtime_libraries(
     active_rlibs: &BTreeSet<PathBuf>,
     library_log: &Path,
     sysroot: &Path,
-    target: &str,
-) -> Result<()> {
-    let mut libraries: BTreeSet<_> = dynamic::read_libraries(library_log)?
+    options: &BuildOptions,
+    compiler_version: &str,
+) -> Result<BTreeMap<String, String>> {
+    let mut libraries: BTreeMap<_, _> = dynamic::read_libraries(library_log)?
         .into_iter()
         .filter(|library| active_rlibs.contains(&library.rlib))
-        .map(|library| library.dylib)
+        .map(|library| (library.dylib, library.identity))
         .collect();
-    libraries.insert(dynamic::standard_library(sysroot, target)?);
+    libraries.insert(
+        dynamic::standard_library(sysroot, tools::host()?)?,
+        format!("std@{compiler_version}"),
+    );
     let mut candidates = BTreeMap::new();
-    for library in libraries {
+    for (library, identity) in libraries {
         let name = PathBuf::from(
             library
                 .file_name()
                 .context("shared library has no filename")?,
         );
         ensure!(
-            candidates.insert(name, library).is_none(),
+            candidates.insert(name, (library, identity)).is_none(),
             "duplicate runtime library"
         );
     }
     let mut pending: Vec<_> = artifacts.values().cloned().collect();
+    let mut names = BTreeMap::new();
     while let Some(artifact) = pending.pop() {
         for dependency in audit::inspect(&artifact, false, &[])?.libraries {
-            let name = PathBuf::from(dependency);
-            if let Some(library) = candidates.remove(&name) {
+            let name = PathBuf::from(&dependency);
+            if let Some((library, identity)) = candidates.remove(&name) {
+                if options.mangle_library {
+                    let mangled = mangle::name(&dependency, &identity)?;
+                    ensure!(
+                        !artifacts.contains_key(Path::new(&mangled)),
+                        "mangled library collides with an executable"
+                    );
+                    names.insert(dependency, mangled);
+                }
                 pending.push(library.clone());
                 ensure!(
                     artifacts.insert(name, library).is_none(),
@@ -261,38 +276,27 @@ fn add_runtime_libraries(
             }
         }
     }
-    Ok(())
+    ensure!(
+        names.values().collect::<BTreeSet<_>>().len() == names.len(),
+        "mangled library name collision"
+    );
+    Ok(names)
 }
 
 fn prepare_artifacts(
     artifacts: BTreeMap<PathBuf, PathBuf>,
     staging: &Path,
     tools: &tools::Tools,
-    target: &str,
+    names: &BTreeMap<String, String>,
     prohibited: &[&Path],
 ) -> Result<Vec<ArtifactReport>> {
     let mut outputs = Vec::new();
     for (relative, original) in artifacts {
+        let name = relative.to_str().context("artifact name is not UTF-8")?;
+        let relative = Path::new(names.get(name).map_or(name, String::as_str));
         writeln!(io::stderr().lock(), "sanitizing {}", relative.display())?;
-        let original_audit = audit::inspect(&original, false, &[])?;
-
-        let clean = staging.join(&relative);
-        fs::create_dir_all(clean.parent().context("artifact has no parent")?)?;
-        let data = fs::read(&original)?;
-
-        let object = object::File::parse(data.as_slice())?;
-        let mut strip = Command::new(&tools.objcopy);
-        strip.arg("--strip-all");
-        for section in object.sections() {
-            let name = section.name()?;
-            if audit::unwanted_section(name) {
-                strip.arg(format!("--remove-section={name}"));
-            }
-        }
-        strip.arg(&original).arg(&clean);
-        project::checked_output(&mut strip)?;
-        let unpacked_audit = audit::inspect(&clean, true, prohibited)?;
-        audit::same_runtime_metadata(&original_audit, &unpacked_audit)?;
+        let clean = staging.join(relative);
+        let unpacked_audit = sanitize(&original, &clean, tools, names, prohibited)?;
         let unpacked_sha256 = tools::sha256(&clean)?;
         let unpacked_bytes = fs::metadata(&clean)?.len();
         if !unpacked_audit.rust_string_hints.is_empty() {
@@ -308,7 +312,7 @@ fn prepare_artifacts(
             let packed = clean.with_extension("rrea-packed");
             let mut pack = Command::new(&tools.upx);
             pack.args(["--no-env", "--best", "--overlay=copy"]);
-            if target.ends_with("windows-msvc") {
+            if cfg!(windows) {
                 pack.args([
                     "--strip-relocs=0",
                     "--compress-exports=0",
@@ -351,7 +355,7 @@ fn prepare_artifacts(
             fs::rename(&packed, &clean)?;
         }
         outputs.push(ArtifactReport {
-            path: relative,
+            path: relative.to_path_buf(),
             packed: true,
             unpacked_bytes,
             unpacked_sha256,
@@ -361,6 +365,42 @@ fn prepare_artifacts(
         });
     }
     Ok(outputs)
+}
+
+fn sanitize(
+    original: &Path,
+    clean: &Path,
+    tools: &tools::Tools,
+    names: &BTreeMap<String, String>,
+    prohibited: &[&Path],
+) -> Result<audit::Inspection> {
+    let mut original_audit = audit::inspect(original, false, &[])?;
+    fs::create_dir_all(clean.parent().context("artifact has no parent")?)?;
+    let mangled = clean.with_extension("rrea-mangled");
+    let source = if names.is_empty() {
+        original
+    } else {
+        fs::copy(original, &mangled)?;
+        mangle::rewrite(&mangled, names, &mut original_audit)?;
+        mangled.as_path()
+    };
+    let data = fs::read(source)?;
+    let object = object::File::parse(data.as_slice())?;
+    let mut strip = Command::new(&tools.objcopy);
+    strip.arg("--strip-all");
+    for section in object.sections() {
+        let name = section.name()?;
+        if audit::unwanted_section(name) {
+            strip.arg(format!("--remove-section={name}"));
+        }
+    }
+    project::checked_output(strip.arg(source).arg(clean))?;
+    let unpacked_audit = audit::inspect(clean, true, prohibited)?;
+    audit::same_runtime_metadata(&original_audit, &unpacked_audit)?;
+    if !names.is_empty() {
+        fs::remove_file(mangled)?;
+    }
+    Ok(unpacked_audit)
 }
 
 fn mask_upx_magic(path: &Path) -> Result<()> {
@@ -801,6 +841,7 @@ struct BuildReport<'a> {
     upx: &'a tools::UpxBuild,
     compiler_version: &'a str,
     obfuscation: &'a [&'a str],
+    mangle_library: bool,
     cargo_log: &'a Path,
     compiler_invocations: &'a Path,
     artifacts: &'a [ArtifactReport],

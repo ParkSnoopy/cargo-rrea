@@ -3,6 +3,7 @@
 mod audit;
 mod build;
 mod dynamic;
+mod mangle;
 mod project;
 mod support;
 mod toolchain;
@@ -50,6 +51,9 @@ struct BuildOptions {
     target: Option<String>,
     #[arg(short = 'j', long, value_name = "N")]
     jobs: Option<std::num::NonZeroUsize>,
+    /// Replace bundled library names with stable 16-character hashes.
+    #[arg(long)]
+    mangle_library: bool,
     #[command(flatten)]
     selection: SelectionOptions,
     #[command(flatten)]

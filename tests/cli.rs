@@ -135,6 +135,8 @@ fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<
         vec!["build", "--release", "--bin", "fixture", "--bins"],
         vec!["build", "--release", "--exclude", "fixture-app"],
         vec!["init", "--release"],
+        vec!["init", "--mangle-library"],
+        vec!["build", "--mangle-library"],
     ] {
         let output = cli().args(&args).output()?;
         ensure!(
@@ -156,6 +158,7 @@ fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<
         "--locked",
         "--target",
         "--jobs",
+        "--mangle-library",
     ] {
         ensure!(help.contains(flag), "build help omits {flag}: {help}");
     }
@@ -277,6 +280,7 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
             "--offline",
             "--manifest-path",
             "app/Cargo.toml",
+            "--mangle-library",
         ],
     ] {
         verify_native_pipeline(selection)
@@ -338,6 +342,10 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
     );
     verify_behavior(&baseline, &paths)?;
     let distribution = verify_distribution(&target, &dist, &paths)?;
+    ensure!(
+        distribution.report["mangle_library"] == selection.contains(&"--mangle-library"),
+        "incorrect mangling report"
+    );
     verify_relocation(root.path(), &distribution, &paths)?;
     let report = &distribution.report;
     ensure!(
@@ -384,6 +392,9 @@ fn verify_republication(
     distribution: &Distribution,
 ) -> Result<()> {
     let dist = manifest_directory.join("target/release/dist");
+    let mangle = distribution.report["mangle_library"]
+        .as_bool()
+        .context("missing mangling status")?;
     fs::write(dist.join("stale.pdb"), b"not a runtime artifact")?;
     let repeated = success(
         cargo_cli()?
@@ -396,7 +407,8 @@ fn verify_republication(
                 "--package",
                 "fixture-app",
                 "--bins",
-            ]),
+            ])
+            .args(mangle.then_some("--mangle-library")),
     )?;
     ensure!(
         String::from_utf8(repeated.stdout)?
@@ -411,6 +423,11 @@ fn verify_republication(
         "rebuild retained a nonessential file"
     );
     verify_behavior(baseline, paths)?;
+    ensure!(
+        distribution.artifacts.iter().all(|path| path.is_file())
+            && fs::read_dir(&dist)?.count() == distribution.artifacts.len(),
+        "rebuild changed library names or retained stale files"
+    );
     verify_failed_publication(manifest_directory, target, distribution)?;
     success(
         cargo_cli()?
@@ -424,7 +441,8 @@ fn verify_republication(
                 "fixture-app",
                 "--bin",
                 "secondary",
-            ]),
+            ])
+            .args(mangle.then_some("--mangle-library")),
     )?;
     ensure!(
         fs::read_dir(&dist)?.count() == 4
@@ -542,6 +560,7 @@ fn verify_distribution(target: &Path, dist: &Path, paths: &[PathBuf]) -> Result<
             "runtime artifact is not in the manifest's distribution directory: {path:?}"
         );
         verify_packing(&path, artifact)?;
+        verify_library_name(&path, artifact, &report)?;
         published_paths.push(path);
     }
     ensure!(
@@ -561,6 +580,66 @@ fn verify_distribution(target: &Path, dist: &Path, paths: &[PathBuf]) -> Result<
         artifacts: published_paths,
         report,
     })
+}
+
+fn verify_library_name(
+    path: &Path,
+    artifact: &serde_json::Value,
+    report: &serde_json::Value,
+) -> Result<()> {
+    if !matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("so" | "dll")
+    ) {
+        return Ok(());
+    }
+    let exports = artifact["unpacked_audit"]["exports"].to_string();
+    let (original, identity) = if exports.contains("fixture_shared") {
+        (
+            "fixture_shared",
+            "fixture-shared@0.1.0:fixture_shared".to_owned(),
+        )
+    } else if exports.contains("fixture_logic") {
+        (
+            "fixture_logic",
+            "fixture-logic@0.1.0:fixture_logic".to_owned(),
+        )
+    } else {
+        (
+            "std",
+            format!(
+                "std@{}",
+                report["compiler_version"]
+                    .as_str()
+                    .context("missing compiler version")?
+            ),
+        )
+    };
+    let digest = digest(identity.as_bytes())?;
+    let expected = if report["mangle_library"] == true {
+        &digest[..16]
+    } else {
+        original
+    };
+    let filename = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .context("missing library stem")?;
+    let filename = if cfg!(windows) {
+        filename
+    } else {
+        filename
+            .strip_prefix("lib")
+            .context("missing library prefix")?
+    };
+    let (stem, suffix) = filename.rsplit_once('-').context("missing Cargo suffix")?;
+    ensure!(
+        stem == expected
+            && suffix.len() == 16
+            && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "incorrect library name: {path:?}"
+    );
+    Ok(())
 }
 
 fn verify_packing(path: &Path, artifact: &serde_json::Value) -> Result<()> {
@@ -608,15 +687,19 @@ fn verify_packing(path: &Path, artifact: &serde_json::Value) -> Result<()> {
             .arg(&restored),
     )?;
     let unpacked = fs::read(recovered)?;
-    let mut digest = String::new();
-    for byte in Sha256::digest(&unpacked) {
-        write!(digest, "{byte:02x}")?;
-    }
     ensure!(
-        artifact["unpacked_sha256"] == digest,
+        artifact["unpacked_sha256"] == digest(&unpacked)?,
         "packing changed the original executable"
     );
     Ok(())
+}
+
+fn digest(data: &[u8]) -> Result<String> {
+    let mut digest = String::new();
+    for byte in Sha256::digest(data) {
+        write!(digest, "{byte:02x}")?;
+    }
+    Ok(digest)
 }
 
 fn verify_relocation(root: &Path, distribution: &Distribution, paths: &[PathBuf]) -> Result<()> {
@@ -646,14 +729,20 @@ fn verify_relocation(root: &Path, distribution: &Distribution, paths: &[PathBuf]
             expected.stdout
         );
     }
-    let dependency = distribution
-        .artifacts
+    let index = distribution.report["artifacts"]
+        .as_array()
+        .context("missing artifact report")?
         .iter()
-        .find(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().contains("fixture_shared"))
+        .position(|artifact| {
+            artifact["unpacked_audit"]["exports"]
+                .to_string()
+                .contains("fixture_shared")
         })
         .context("missing transitive runtime library")?;
+    let dependency = distribution
+        .artifacts
+        .get(index)
+        .context("missing transitive artifact")?;
     fs::remove_file(relocated.join(dependency.file_name().context("missing library name")?))?;
     let missing =
         Command::new(relocated.join(paths[0].file_name().context("missing executable name")?))
