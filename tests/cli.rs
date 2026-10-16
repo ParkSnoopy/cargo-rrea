@@ -96,7 +96,8 @@ fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<
         vec!["build", "--release", "--definitely-unknown"],
         vec!["build", "--release", "--bin", "fixture", "--bins"],
         vec!["build", "--release", "--exclude", "fixture-app"],
-        vec!["build", "--mangle-library"],
+        vec!["build", "--release", "--mangle-library"],
+        vec!["build", "--no-mangle-library"],
     ] {
         let output = cli().args(&args).output()?;
         ensure!(
@@ -123,7 +124,7 @@ fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<
         "--locked",
         "--target",
         "--jobs",
-        "--mangle-library",
+        "--no-mangle-library",
     ] {
         ensure!(help.contains(flag), "build help omits {flag}: {help}");
     }
@@ -275,8 +276,8 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
             "--offline",
             "--manifest-path",
             "app/Cargo.toml",
-            "--mangle-library",
         ],
+        &["--no-mangle-library"],
     ] {
         verify_native_pipeline(selection)
             .with_context(|| format!("native build selection: {selection:?}"))?;
@@ -293,10 +294,10 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
     } else {
         "custom-target"
     });
-    let manifest_directory = if selection.is_empty() {
-        root.path().to_path_buf()
-    } else {
+    let manifest_directory = if selection.contains(&"--manifest-path") {
         root.path().join("app")
+    } else {
+        root.path().to_path_buf()
     };
     let dist = manifest_directory.join("target/release/dist");
     let baseline = root.path().join("baseline");
@@ -313,7 +314,7 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
             .arg(&baseline),
     )?;
 
-    if cfg!(target_os = "linux") && selection.contains(&"--mangle-library") {
+    if cfg!(target_os = "linux") && selection.contains(&"--manifest-path") {
         fs::create_dir_all(root.path().join(".cargo"))?;
         fs::copy(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/elf-tight-layout.toml"),
@@ -343,7 +344,7 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
     verify_behavior(&baseline, &paths)?;
     let distribution = verify_distribution(&target, &dist, &paths)?;
     ensure!(
-        distribution.report["mangle_library"] == selection.contains(&"--mangle-library"),
+        distribution.report["mangle_library"] == !selection.contains(&"--no-mangle-library"),
         "incorrect mangling report"
     );
     verify_relocation(root.path(), &distribution, &paths)?;
@@ -412,7 +413,7 @@ fn verify_republication(
                 "fixture-app",
                 "--bins",
             ])
-            .args(mangle.then_some("--mangle-library")),
+            .args((!mangle).then_some("--no-mangle-library")),
     )?;
     ensure!(
         String::from_utf8(repeated.stdout)?
@@ -446,7 +447,7 @@ fn verify_republication(
                 "--bin",
                 "secondary",
             ])
-            .args(mangle.then_some("--mangle-library")),
+            .args((!mangle).then_some("--no-mangle-library")),
     )?;
     ensure!(
         fs::read_dir(&dist)?.count() == 4
@@ -546,6 +547,11 @@ fn verify_distribution(target: &Path, dist: &Path, paths: &[PathBuf]) -> Result<
         "unexpected UPX revision: {}",
         report["upx"]
     );
+    ensure!(
+        report["upx"]["patch_sha256"]
+            == digest(include_bytes!("../thirdparty/upx.patch").as_slice())?,
+        "unexpected UPX patch provenance"
+    );
     let mut published_paths = Vec::new();
     for artifact in artifacts {
         let path = published[0]
@@ -556,8 +562,11 @@ fn verify_distribution(target: &Path, dist: &Path, paths: &[PathBuf]) -> Result<
             .as_bool()
             .context("missing packing status")?;
         ensure!(
-            packed && data.windows(4).any(|bytes| bytes == b"RREA"),
-            "missing RREA packing signature: {path:?}"
+            packed
+                && !data
+                    .windows(4)
+                    .any(|bytes| bytes == b"RREA" || bytes == b"UPX!"),
+            "missing packing or original signature remains: {path:?}"
         );
         ensure!(
             path.parent() == Some(dist),
@@ -649,46 +658,11 @@ fn verify_library_name(
 fn verify_packing(path: &Path, artifact: &serde_json::Value) -> Result<()> {
     let directory = tempfile::tempdir()?;
     let recovered = directory.path().join("unpacked");
-    let output = Command::new(env!("RREA_UPX_PATH"))
-        .args(["--no-env", "--decompress", "-o"])
-        .arg(&recovered)
-        .arg(path)
-        .output()?;
-    ensure!(
-        !output.status.success(),
-        "normal UPX decompressed RREA output"
-    );
-    let mut data = fs::read(path)?;
-    let file = object::File::parse(data.as_slice())?;
-    let offsets = match file {
-        object::File::Elf64(_) => {
-            let overlay =
-                u32::from_le_bytes(*data.last_chunk::<4>().context("missing overlay offset")?);
-            vec![usize::try_from(overlay)? - 8, data.len() - 36]
-        }
-        object::File::Pe64(_) => {
-            vec![
-                data.windows(4)
-                    .position(|bytes| bytes == b"RREA")
-                    .context("missing RREA header")?,
-            ]
-        }
-        _ => anyhow::bail!("unexpected executable format"),
-    };
-    for offset in offsets {
-        ensure!(
-            &data[offset..offset + 4] == b"RREA",
-            "header magic was not replaced"
-        );
-        data[offset..offset + 4].copy_from_slice(b"UPX!");
-    }
-    let restored = directory.path().join("restored");
-    fs::write(&restored, data)?;
     success(
         Command::new(env!("RREA_UPX_PATH"))
             .args(["--no-env", "--decompress", "-o"])
             .arg(&recovered)
-            .arg(&restored),
+            .arg(path),
     )?;
     let unpacked = fs::read(recovered)?;
     if let object::File::Elf64(elf) = object::File::parse(unpacked.as_slice())? {

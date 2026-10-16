@@ -10,6 +10,8 @@ This case study compares two supplied reverse-engineering reports about [`b116`]
 The original reports are not included in the maintained documentation.
 Section references below identify evidence in those reports.
 This comparison does not rerun their binary analysis or independently validate their tool results.
+The reports and screenshots describe the earlier header-masked build, not a new assessment of the current patched packer.
+The historical `--mangle-library` flag is no longer needed or accepted: current builds mangle names by default and accept `--no-mangle-library` to opt out.
 
 ## What the reports recovered
 
@@ -31,10 +33,11 @@ Packing and mangled filenames did not keep those facts hidden.
 
 Supplied terminal screenshots also show plaintext UPX branding, remaining `UPX!` bytes beside `RREA`, and Rust runtime names in Ghidra relocation diagnostics.
 These are concrete fingerprint leaks despite stock UPX refusing to unpack the executable.
-Their remediation is planned in [follow-up work](todo.md#fix-immediate-packer-and-language-fingerprints).
+The [UPX overlay](../thirdparty/upx.patch) addresses known native packer identifiers, while Rust-symbol and structural-detection work remains in the [backlog](todo.md#fix-immediate-packer-and-language-fingerprints).
 
-The [build pipeline](../src/build.rs) explicitly uses UPX and replaces its header magic with `RREA`.
-This is reversible format masking, not evidence of encryption or a separately engineered anti-debugging system.
+The evaluated build used UPX with `RREA` header masking.
+The current [build pipeline](../src/build.rs) instead uses coordinated patched packer/stub tags and checks for known identifier leaks.
+Neither approach establishes encryption or a separately engineered anti-debugging system.
 The report's descriptions of a custom unpacker and a separate “segment hollowing” defense should remain attributed interpretations, not additional project guarantees.
 See [architecture and limits](architecture.md) for the implementation contract.
 

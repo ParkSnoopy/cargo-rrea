@@ -106,7 +106,7 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         artifacts: &outputs,
         limitations: [
             "Precompiled standard libraries and native dependencies are not fully covered by these LLVM passes.",
-            "Rust runtime strings and code patterns can remain. UPX packing and header masking are reversible.",
+            "Rust runtime strings and code patterns can remain. Modified UPX packing is reversible.",
             "Metadata and UPX checks do not prove functional equivalence or resistance to reverse engineering.",
         ],
     };
@@ -340,16 +340,7 @@ fn prepare_artifacts(
                 tools::sha256(&recovered)? == unpacked_sha256,
                 "UPX recovery changed executable bytes"
             );
-            mask_upx_magic(&packed)?;
-            let rejected = Command::new(&tools.upx)
-                .args(["--no-env", "--decompress", "-o"])
-                .arg(clean.with_extension("rrea-rejected"))
-                .arg(&packed)
-                .output()?;
-            ensure!(
-                !rejected.status.success(),
-                "UPX decompressed the executable after replacing its magic"
-            );
+            audit::validate_packed(&packed)?;
             audit::inspect(&packed, true, prohibited)?;
             fs::remove_file(&clean)?;
             fs::remove_file(&recovered)?;
@@ -402,56 +393,6 @@ fn sanitize(
         fs::remove_file(mangled)?;
     }
     Ok(unpacked_audit)
-}
-
-fn mask_upx_magic(path: &Path) -> Result<()> {
-    let mut data = fs::read(path)?;
-    let file = object::File::parse(data.as_slice())?;
-    let offsets = match &file {
-        object::File::Elf64(_) => {
-            let overlay = u32::from_le_bytes(
-                *data
-                    .last_chunk::<4>()
-                    .context("missing UPX overlay offset")?,
-            );
-            let loader_magic = usize::try_from(overlay)?
-                .checked_sub(8)
-                .context("invalid UPX loader offset")?;
-            // Change only header fields, never compressed data or the runtime's EOF marker.
-            vec![
-                loader_magic,
-                data.len().checked_sub(36).context("missing UPX trailer")?,
-            ]
-        }
-        object::File::Pe64(_) => {
-            let section = file
-                .sections()
-                .find(|section| section.name() == Ok("UPX1"))
-                .context("missing UPX data section")?;
-            let (offset, _) = section
-                .file_range()
-                .context("UPX section has no file data")?;
-            let start = usize::try_from(offset)?
-                .checked_sub(64)
-                .context("invalid UPX section offset")?;
-            let end = (start + 1024).min(data.len());
-            let offset = data[start..end]
-                .windows(4)
-                .position(|bytes| bytes == b"UPX!")
-                .context("missing UPX pack header")?;
-            vec![start + offset]
-        }
-        _ => anyhow::bail!("unsupported UPX executable format"),
-    };
-    for offset in offsets {
-        let magic = data
-            .get_mut(offset..offset + 4)
-            .context("UPX magic is outside the executable")?;
-        ensure!(magic == b"UPX!", "unexpected UPX header magic");
-        magic.copy_from_slice(b"RREA");
-    }
-    fs::write(path, data)?;
-    Ok(())
 }
 
 fn publish(

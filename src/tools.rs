@@ -24,6 +24,7 @@ pub struct Tools {
 pub struct UpxBuild {
     pub repository: &'static str,
     pub revision: &'static str,
+    pub patch_sha256: &'static str,
     pub sha256: String,
 }
 
@@ -62,6 +63,7 @@ fn embedded_upx(root: &Path) -> Result<(PathBuf, UpxBuild)> {
     let build = UpxBuild {
         repository: "upx/upx",
         revision: env!("RREA_UPX_REVISION"),
+        patch_sha256: env!("RREA_UPX_PATCH_SHA256"),
         sha256: digest(UPX)?,
     };
     let directory = root.join(format!("upx-{}", build.sha256));

@@ -56,7 +56,9 @@ fn source_files(root: &Path, directory: &Path, files: &mut Vec<String>) -> Resul
 }
 
 fn source_revision(source: &Path, output: &mut impl Write) -> Result<String> {
-    let pin: UpxSource = serde_json::from_str(include_str!("thirdparty/upx-source.json"))?;
+    let pin_path = source.with_file_name("upx-source.json");
+    writeln!(output, "cargo:rerun-if-changed={}", pin_path.display())?;
+    let pin: UpxSource = serde_json::from_slice(&fs::read(pin_path)?)?;
     if source.join(".git").exists() {
         ensure!(
             Path::new(&git(source, &["rev-parse", "--show-toplevel"])?).canonicalize()?
@@ -121,6 +123,41 @@ fn git(source: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?.trim().to_owned())
 }
 
+fn patched_source(source: &Path, directory: &Path, overlay: &[u8]) -> Result<PathBuf> {
+    fs::create_dir_all(directory)?;
+    let staged = tempfile::Builder::new()
+        .prefix(".source-")
+        .tempdir_in(directory)?;
+    let mut files = Vec::new();
+    source_files(source, source, &mut files)?;
+    for relative in files {
+        let target = staged.path().join(&relative);
+        fs::create_dir_all(target.parent().context("UPX source has no parent")?)?;
+        fs::copy(source.join(relative), target)?;
+    }
+    let patch = directory.join("upx.patch");
+    fs::write(&patch, overlay)?;
+    support::checked_output(
+        Command::new("git")
+            .current_dir(staged.path())
+            .env("GIT_CEILING_DIRECTORIES", directory)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .args(["apply", "--whitespace=error-all"])
+            .arg(&patch),
+    )
+    .context(
+        "cannot apply thirdparty/upx.patch; Git and matching pinned UPX sources are required",
+    )?;
+    let destination = directory.join("source");
+    if destination.exists() {
+        fs::remove_dir_all(&destination)?;
+    }
+    fs::rename(staged.path(), &destination)?;
+    Ok(destination)
+}
+
 fn checked(command: &mut Command) -> Result<()> {
     ensure!(
         command.status()?.success(),
@@ -179,18 +216,24 @@ fn main() -> Result<()> {
     let mut output = io::stdout().lock();
     let revision = source_revision(&source, &mut output)?;
     writeln!(output, "cargo:rerun-if-changed={}", source.display())?;
+    writeln!(output, "cargo:rerun-if-changed=thirdparty/upx.patch")?;
     for variable in ["CC", "CXX", "CFLAGS", "CXXFLAGS", "CARGO_NET_OFFLINE"] {
         writeln!(output, "cargo:rerun-if-env-changed={variable}")?;
     }
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     // Cargo can reuse OUT_DIR when switching between a checkout and its extracted crate.
+    let overlay = fs::read(source.with_file_name("upx.patch"))?;
+    let patch_sha256 = toolchain::digest(overlay.as_slice())?;
     let source_key = toolchain::digest(
-        source
-            .to_str()
-            .context("UPX source path must be UTF-8")?
-            .as_bytes(),
+        format!(
+            "{}\n{revision}\n{patch_sha256}",
+            source.to_str().context("UPX source path must be UTF-8")?
+        )
+        .as_bytes(),
     )?;
     let build = out_dir.join("upx").join(source_key);
+    let source = patched_source(&source, &build, &overlay)?;
+    let build = build.join("build");
     let configuration = if env::var("PROFILE")? == "release" {
         "Release"
     } else {
@@ -235,5 +278,9 @@ fn main() -> Result<()> {
         executable.display()
     )?;
     writeln!(output, "cargo:rustc-env=RREA_UPX_REVISION={revision}")?;
+    writeln!(
+        output,
+        "cargo:rustc-env=RREA_UPX_PATCH_SHA256={patch_sha256}"
+    )?;
     Ok(())
 }

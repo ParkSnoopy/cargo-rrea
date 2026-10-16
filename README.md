@@ -4,7 +4,7 @@ Build Rust release applications with Arkari obfuscation, metadata stripping, and
 
 ## Requirements
 
-- Rust/Cargo and curl on PATH.
+- Rust/Cargo, Git, and curl on PATH.
 - Native x86_64 Linux GNU or Windows MSVC; Linux is runtime-tested, Windows is not yet runtime-verified.
 - Installation requires CMake, Ninja, and a C/C++ toolchain with C++17 support.
 - On Linux, the system C++ runtime must provide `libstdc++.so.6`.
@@ -31,6 +31,7 @@ cargo rrea build --release
 
 `build` temporarily disables debug information and strips symbols without editing `Cargo.toml`.  
 `build` requires `--release` (or `-r`); development profiles are not supported.
+Library names are mangled by default; pass `--no-mangle-library` to keep their original names.
 
 Select a package and executable, or build with an already cached toolchain offline:
 
@@ -47,14 +48,16 @@ For a virtual workspace manifest, the destination is beneath the workspace root.
 Distribute the complete `dist` directory.
 Reports and logs stay in Cargo's target directory under `rrea/dist-<id>/`, outside the distribution.
 The pipeline packs executables and shared libraries.
-Their UPX header magic is `RREA`, so normal UPX decompression fails.
+The bundled UPX patch removes known identification banners, PE section labels, and named runtime mappings, and changes packer/stub tags together.
+The matching patched packer can decompress the output; stock UPX does not support its modified format.
 
 ## Limits
 
 - Cross-compilation is not supported.
 - Required native/system libraries are not automatically bundled.
 - Rust strings and recognizable code can remain; UPX packing is reversible, not encryption.
-- Replacing the header magic is reversible and does not prevent manual unpacking.
+- Removing known packer identifiers does not prevent structural recognition or manual unpacking.
+- Modified UPX requires GPL-compatible programs under the [upstream license](thirdparty/upx/LICENSE).
 - Only build projects you trust: their build scripts and procedural macros execute during compilation.
 
 [Architecture and source development](docs/architecture.md)

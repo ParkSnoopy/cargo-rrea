@@ -57,6 +57,7 @@ fn pe_mangling_preserves_imports_exports_code_and_packing() -> Result<()> {
     let path = directory.path().join("std-abcd.dll");
     let original = pe_fixture()?;
     fs::write(&path, &original)?;
+    check_pe_packing(&path, &original)?;
     let mut expected = audit::inspect(&path, true, &[])?;
     let renamed = name("std-abcd.dll", "std@fixture-version")?;
     let names = BTreeMap::from([("std-abcd.dll".to_owned(), renamed.clone())]);
@@ -117,7 +118,17 @@ fn pe_mangling_preserves_imports_exports_code_and_packing() -> Result<()> {
         export_name.starts_with(format!("{renamed}\0").as_bytes()),
         "PE export DLL name was not rewritten"
     );
-    check_pe_packing(&path, &data)
+    check_pe_packing(&path, &data)?;
+    let descriptor = table.descriptors()?.next()?.context("missing PE import")?;
+    let (iat, _) = after
+        .section_table()
+        .pe_file_range_at(descriptor.first_thunk.get(LE))
+        .context("missing PE IAT range")?;
+    // Bound-style IAT bytes must survive independently of the lookup table.
+    let mut bound = data.clone();
+    put(&mut bound, iat as usize, &U64::new(LE, after.entry()))?;
+    fs::write(&path, &bound)?;
+    check_pe_packing(&path, &bound)
 }
 
 fn check_pe_packing(path: &Path, data: &[u8]) -> Result<()> {
@@ -141,6 +152,7 @@ fn check_pe_packing(path: &Path, data: &[u8]) -> Result<()> {
         "PE packing failed: {}",
         String::from_utf8_lossy(&result.stderr)
     );
+    audit::validate_packed(&packed)?;
     let result = Command::new(env!("RREA_UPX_PATH"))
         .args(["--no-env", "--decompress", "-o"])
         .arg(&recovered)
@@ -158,7 +170,7 @@ fn check_pe_packing(path: &Path, data: &[u8]) -> Result<()> {
         .position(|(before, after)| before != after);
     ensure!(
         recovered == data,
-        "PE packing changed mangled bytes: first difference {changed:?}; sizes {} and {}; before {:?}; after {:?}",
+        "PE packing changed source bytes: first difference {changed:?}; sizes {} and {}; before {:?}; after {:?}",
         data.len(),
         recovered.len(),
         changed.and_then(|index| data.get(index..index + 16)),

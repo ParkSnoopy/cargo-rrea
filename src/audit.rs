@@ -183,6 +183,37 @@ fn contains_text(data: &[u8], text: &str) -> bool {
         || data.windows(wide.len()).any(|window| window == wide)
 }
 
+pub fn validate_packed(path: &Path) -> Result<()> {
+    let data = fs::read(path)?;
+    for marker in [
+        "UPX!",
+        "UPX0",
+        "UPX1",
+        "UPX2",
+        "UPX ",
+        "upx.sf.net",
+        "RREA",
+        "upX\0",
+        "\0upx\0",
+    ] {
+        ensure!(
+            !contains_text(&data, marker),
+            "packer fingerprint remains in {}: {marker:?}",
+            path.display()
+        );
+    }
+    // RREA: former UPX Unix-format tag, little endian.
+    let original_tag = [0xa1, 0xd8, 0xd0, 0xd5];
+    ensure!(
+        !data
+            .windows(original_tag.len())
+            .any(|bytes| bytes == original_tag),
+        "original packer format tag remains in {}",
+        path.display()
+    );
+    Ok(())
+}
+
 pub fn same_runtime_metadata(before: &Inspection, after: &Inspection) -> Result<()> {
     ensure!(
         before.libraries == after.libraries,

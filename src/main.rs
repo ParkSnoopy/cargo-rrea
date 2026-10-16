@@ -46,8 +46,8 @@ struct BuildOptions {
     target: Option<String>,
     #[arg(short = 'j', long, value_name = "N")]
     jobs: Option<std::num::NonZeroUsize>,
-    /// Replace bundled library names with stable 16-character hashes.
-    #[arg(long)]
+    /// Keep original library names instead of stable 16-character hashes.
+    #[arg(long = "no-mangle-library", action = clap::ArgAction::SetFalse, default_value_t = true)]
     mangle_library: bool,
     #[command(flatten)]
     selection: SelectionOptions,

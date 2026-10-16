@@ -58,11 +58,15 @@ The [source pin](../thirdparty/upx-source.json) records the upstream revision an
 The digest is SHA-256 over sorted UTF-8 relative paths with `/` separators, each followed by a tab, the file's lowercase SHA-256, and LF.
 Both checkout and archive builds verify this digest; links, special files, missing files, extra files, and changed content fail verification.
 Checkout builds additionally require the pinned Git revision and clean recursive submodules.
-Crate archives deliberately do not require `.git` files or Git commands.
+Crate archives do not require `.git` files, but all builds require Git to apply the [UPX overlay](../thirdparty/upx.patch).
+After validating pristine sources, the build script copies them without Git metadata into `OUT_DIR` and runs `git apply --whitespace=error-all` before CMake configuration.
+Patch failure aborts before compiler acquisition, and the upstream checkout remains unchanged.
+The build script reads the watched patch and source-pin files from disk on each run, so patch-only edits do not depend on recompiling an embedded overlay.
+The native build directory is keyed by the original source path, upstream revision, and patch SHA-256.
 Normal builds never fetch moving branch updates or fall back to a released UPX binary.
 CMake and Ninja build Debug for development/test profiles and Release for release profiles, honoring Cargo's job limit.
 Native build output stays under Cargo's `OUT_DIR`, outside the submodule.
-The native build directory is keyed by its source path because Cargo can reuse `OUT_DIR` between checkout and extracted-crate builds; their CMake caches must remain separate.
+
 Linux native compilation remaps UPX source and build paths, including paths in assertions and debug information, so the embedded executable does not leak the checkout location into protected outputs.
 
 The UPX executable is embedded in `cargo-rrea` and materialized atomically into a content-addressed per-user cache with executable permissions.
@@ -92,15 +96,19 @@ Only reachable generated Rust libraries and the compiler's dynamic standard libr
 Linux executables locate adjacent libraries through `$ORIGIN`.
 Required imports, exports, relocations, and unwind data remain intact.
 
-With `--mangle-library`, Linux linking reserves dynamic-string space for the longer hashed names using redundant `/.` components in the `$ORIGIN` search path.
+Library-name mangling is enabled by default and can be disabled with `--no-mangle-library`.
+When enabled, Linux linking reserves dynamic-string space for the longer hashed names using redundant `/.` components in the `$ORIGIN` search path.
 The reserve scales with the dependency graph and includes alignment slack.
 Sanitization reduces that padded path back to `$ORIGIN` before rebuilding loader metadata, without changing unrelated search paths.
 This keeps code, data, and unwind addresses unchanged while leaving loader metadata below the UPX stub, including for tightly packed ELF layouts.
 
 Publication follows stripping, metadata audits, UPX integrity checks, and decompression audits in a staging directory.
-The pipeline then replaces UPX header magic with `RREA` and requires normal UPX decompression to fail.
-ELF header offsets come from the UPX trailer's overlay offset, not the program-header count.
-Compressed data and runtime EOF markers remain unchanged.
+The UPX overlay removes emitted identification banners, renames PE sections, anonymizes Linux memfd names, and coordinates non-text format tags in the packer and rebuilt x86_64 runtime stubs.
+Native PE64 packing preserves the original import/export layout in the compressed source image while retaining the packed image's runtime tables.
+Offline recovery restores those source bytes instead of reconstructing the tables into a different layout.
+The pipeline no longer rewrites output headers to `RREA`.
+Packed-artifact audits reject known upstream tags, branding, and the former `RREA` label before publication.
+The matching embedded packer tests and decompresses these artifacts directly, and recovered bytes must match their pre-packing hash.
 Distributions contain only selected executables and required Rust shared libraries in `target/release/dist/`, relative to the selected manifest's directory.
 A virtual workspace manifest uses the workspace root.
 Custom Cargo target directories affect internal builds and reports, not the distribution destination.
@@ -111,7 +119,7 @@ Directory publication failures restore the previous directory when filesystem op
 The CLI prints executable paths on stdout and diagnostics on stderr.
 
 Reports and Cargo/compiler logs stay under Cargo's target directory as `rrea/dist-<id>/`, outside the runtime distribution.
-The report records compiler release provenance, the UPX source commit and executable hash, packing status, artifact hashes, audit results, and known limits.
+The report records compiler release provenance, the UPX source commit, overlay SHA-256, executable hash, packing status, artifact hashes, audit results, and known limits.
 Artifact paths are absolute distribution paths.
 Log paths resolve against the report directory.
 
@@ -124,6 +132,7 @@ Log paths resolve against the report directory.
 | [src/support.rs](../src/support.rs) | Shared child-process checks and file locks |
 | [build.rs](../build.rs) | Compiler bootstrap, pinned UPX source validation, native compilation, and embedding |
 | [thirdparty/upx-source.json](../thirdparty/upx-source.json) | UPX revision and recursive source-content digest for checkout and crate builds |
+| [thirdparty/upx.patch](../thirdparty/upx.patch) | Format-patch overlay with coordinated native packer/stub changes and rebuilt headers |
 | [src/toolchain.rs](../src/toolchain.rs) | Compiler release selection, verified acquisition, and bounded ZIP extraction shared by bootstrap and runtime |
 | [src/tools.rs](../src/tools.rs) | Runtime cache selection and embedded UPX materialization |
 | [src/dynamic.rs](../src/dynamic.rs) | Dependency selection and compiler argument adaptation |
@@ -147,7 +156,8 @@ Log paths resolve against the report directory.
   Rust runtime strings, type names, and recognizable code can remain.
   Metadata removal does not guarantee removal of every Rust fingerprint.
 - UPX packing is reversible, not encryption.
-  Replacing header magic blocks normal UPX decompression, not manual recovery.
+  Removing known signatures does not hide every loader pattern or prevent manual recovery with the patched packer.
+  Modified UPX and stubs are restricted to GPL-compatible programs by the [upstream license](../thirdparty/upx/LICENSE).
   Integrity checks do not establish resistance to reverse engineering or application behavior beyond the exercised fixtures.
 - Application builds execute their own build scripts and procedural macros.
   The pipeline is not a sandbox for untrusted projects.
@@ -155,7 +165,7 @@ Log paths resolve against the report directory.
 ## Source development
 
 Git checkouts require recursive submodules initialized; crate archives already contain the verified UPX sources and vendors.
-Building `cargo-rrea` requires Rust/Cargo, curl, CMake, Ninja, and a C/C++ toolchain with C++17 support; checkout builds also require Git.
+Building `cargo-rrea` requires Rust/Cargo, Git, curl, CMake, Ninja, and a C/C++ toolchain with C++17 support.
 
 Initialize the submodules from the repository root:
 
@@ -171,6 +181,9 @@ git -C thirdparty/upx submodule update --init --recursive
 ```
 
 Review and record the changed gitlink with the consuming code, and update the source pin's revision and digest together.
+Regenerate the overlay against the new pinned revision in a disposable clone and export its commit with `git format-patch --stdout -1`.
+When changing runtime stub sources, regenerate their checked-in headers and associated tracked maps/dumps with upstream stubtools before exporting the patch.
+Overlay-only changes leave the pristine upstream revision and source digest unchanged.
 Read the new revision with `git -C thirdparty/upx rev-parse HEAD` and compute the canonical source digest from the repository root:
 
 ```sh
@@ -198,6 +211,7 @@ cargo package --locked
 ```
 
 The regular tests verify the bootstrapped compiler and matching sysroot, CLI and invalid-manifest rejection, archive extraction boundaries, detached offline cache misses, unsupported targets, and UPX cache integrity.
+The PE64 fixture checks import/export/code preservation and byte-identical packing recovery before and after name mangling, including differing IAT and lookup contents.
 The ignored native test exercises `cargo rrea build --release` directly for both default workspace selection and an explicitly selected executable package.
 Its project requests debug information and unstripped output, and both successful and failed builds must preserve workspace and member manifests byte for byte.
 It uses the bootstrap compiler offline with an initially empty user cache.
@@ -206,7 +220,7 @@ The fixture includes an allocating `no_std` dependency and its transitive `no_st
 It also checks relocated loading, failure without the packed transitive dependency, and preservation of published output after compilation failure.
 The test covers member manifests, custom Cargo target directories, stale-file removal, and single-executable selection.
 The mangled Linux case uses a tightly packed ELF layout and checks that search-path padding is removed before packing.
-It checks normal UPX rejection and byte-identical recovery after restoring the header magic.
+It checks the absence of original packing signatures, patch provenance, and byte-identical recovery using the matching patched packer.
 
 The maximum Clippy preset applies to the CLI, Cargo build script, shared modules, and tests.
 Run the uncapped all-target gate without changing lint levels or thresholds.

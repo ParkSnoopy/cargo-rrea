@@ -1,7 +1,7 @@
 # Evaluation and protection follow-ups
 
 Proposed work arising from the [reverse-engineering comparison](comparison.md) and supplied terminal screenshots.
-These are open tasks, not implemented protections or measured results.
+Unchecked tasks remain open; completed implementation work does not establish resistance to reverse engineering.
 
 ## Establish comparable evidence
 
@@ -20,16 +20,17 @@ These are open tasks, not implemented protections or measured results.
 - Ghidra relocation diagnostics expose Rust-mangled names containing `panic_bounds_check` and `rust_no_alloc_shim_is_unstable_v2`.
 
 These observations establish visible fingerprints, not successful decompilation or a particular automatic language-classification result.
-The [current header masking](../src/build.rs) deliberately leaves compressed data and runtime EOF markers unchanged.
-The [current audit](../src/audit.rs) rejects static symbols but retains runtime imports/exports and reports selected Rust string hints.
+The screenshots predate the [UPX overlay](../thirdparty/upx.patch), which changes native runtime tags together with the packer and removes known identification strings.
+The [current audit](../src/audit.rs) rejects known packed-output identifiers, but retains runtime imports/exports and reports selected Rust string hints.
 Neither filename mangling nor static-symbol stripping addresses all of these leaks.
 
 ### UPX identifiers and structure
 
 - [ ] Inventory identifying strings, magic values, the fixed `RREA` label, loader-stub signatures, and packed ELF layout across the executable and every bundled library.
 - [ ] Trace each occurrence to optional branding, required attribution, format metadata, compressed data, or runtime markers before changing it.
-- [ ] Remove avoidable identifiers at their source and rebuild the packer/stub, retaining legally required notices and updating the [verified source pin](../thirdparty/upx-source.json) for intentional source changes.
-- [ ] For runtime-required signatures, design coordinated writer/reader changes instead of global byte replacement or another fixed identifying label.
+- [x] Remove emitted native UPX banners, PE section labels, and Linux memfd names through a source overlay with rebuilt x86_64 stubs.
+  Preserve upstream source notices and licenses, verify the pristine [source pin](../thirdparty/upx-source.json), and record the overlay hash separately.
+- [x] Coordinate native packer/stub format tags and remove post-packing `RREA` rewriting instead of blindly replacing runtime bytes.
 - [ ] Evaluate structural detection separately from string detection, including stub instruction patterns and segment layout.
   If these still identify UPX, assess a more substantially changed stub or alternative packing backend before claiming the structure is concealed.
 
@@ -46,6 +47,8 @@ Neither filename mangling nor static-symbol stripping addresses all of these lea
 
 - [ ] Extend artifact audits to detect the observed UPX/RREA and Rust symbol fingerprints before publication, rejecting avoidable leaks rather than only warning.
   Record any necessary retained identifiers explicitly instead of reporting a fingerprint-free result.
+- [x] Reject the known native UPX/RREA identifiers before publication and verify direct recovery with the patched packer.
+  Rust-symbol policy and structural-detector coverage remain open.
 - [ ] Repeat string scans, symbol inspection, signature detection, and Ghidra import using recorded tool versions on final executables, libraries, and recovered payloads.
   Include the matching bundled UPX version rather than relying only on the older tool shown in the screenshot.
 - [ ] Require successful loading, relocation, allocation, panic/unwind, and behavior parity after each transformation.
