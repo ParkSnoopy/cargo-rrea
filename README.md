@@ -58,3 +58,5 @@ Their UPX header magic is `RREA`, so normal UPX decompression fails.
 - Only build projects you trust: their build scripts and procedural macros execute during compilation.
 
 [Architecture and source development](docs/architecture.md)
+
+[Reverse-engineering comparison](docs/comparison.md)
