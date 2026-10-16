@@ -2,7 +2,7 @@
 
 mod audit;
 mod build;
-mod dynamic;
+
 mod project;
 mod support;
 mod toolchain;
@@ -35,7 +35,7 @@ enum Action {
         #[arg(long, value_name = "PATH")]
         manifest_path: Option<PathBuf>,
     },
-    /// Build release executables with Arkari obfuscation and packed libraries.
+    /// Build standalone release executables with Arkari obfuscation and UPX.
     Build(BuildOptions),
 }
 

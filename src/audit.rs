@@ -128,6 +128,30 @@ pub fn inspect(path: &Path, clean: bool, prohibited_paths: &[&Path]) -> Result<I
     })
 }
 
+pub fn standalone(path: &Path) -> Result<()> {
+    let data = fs::read(path)?;
+    let file = object::File::parse(data.as_slice())?;
+    if let object::File::Elf64(elf) = &file {
+        use object::read::elf::{Dyn, ProgramHeader};
+        let endian = elf.endian();
+        ensure!(
+            !elf.elf_program_headers()
+                .iter()
+                .any(|header| { header.p_type(endian) == object::elf::PT_INTERP }),
+            "standalone executable still requires a dynamic loader; static native libraries are required"
+        );
+        if let Some((entries, _)) = elf.elf_section_table().dynamic(endian, data.as_slice())? {
+            ensure!(
+                !entries
+                    .iter()
+                    .any(|entry| entry.d_tag(endian) == object::elf::DT_NEEDED),
+                "standalone executable still requires shared libraries"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn validate_clean(file: &object::File<'_>, data: &[u8], prohibited_paths: &[&Path]) -> Result<()> {
     for section in file.sections() {
         let name = section.name()?;
