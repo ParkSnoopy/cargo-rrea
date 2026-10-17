@@ -17,6 +17,8 @@ Completed implementation work does not establish resistance to reverse engineeri
 - [ ] Add controlled build variants to separate stripping, packing, filename mangling, and compiler-obfuscation effects without changing the default protection policy.
   Six variants isolate the post-link transformations and compare filename policies.
   A same-linkage, same-profile compiler-pass control is still required to isolate obfuscation cost.
+  Per-feature opt-outs now provide that build mechanism, including individual LLVM passes, stripping, packing, and both mangling policies.
+  The historical six-variant evaluation has not been rerun with these controls.
 
 ## Fix immediate packer and language fingerprints
 
@@ -61,13 +63,13 @@ Neither filename mangling nor static-symbol stripping addresses all of these lea
   Adapt metadata audits to validate the declared rename map rather than weakening import/export checks.
   The [design](rust-fingerprints.md#closed-bundle-symbol-map) includes ELF/PE obligations, atomic publication, exclusions, and acceptance gates.
 - [ ] Implement and verify the closed-bundle symbol map on both native platforms.
-  - [x] Implement opt-in ELF renaming with exact-name exclusions and collision rejection.
+  - [x] Implement default-on ELF renaming with exact-name exclusions, explicit opt-out, and collision rejection.
     Packed Rust fixtures rename 1,820 symbols with each library filename policy while preserving loading, allocation, panic/unwind, relocation, and failed publication.
     GNU/SysV hash, versioned, weak, TLS/IFUNC, ambiguous-provider, and `dlsym` boundaries have dedicated loader coverage.
   - [ ] Implement PE symbol renaming and establish native Windows acceptance.
 - [ ] Remove avoidable source paths and implementation strings at compilation or generation time, investigating pass coverage where strings remain.
   Do not blindly overwrite loaded data, public CLI text, or required diagnostics.
-  Local absolute paths and removable metadata are already rejected.
+  Local absolute paths and removable metadata are rejected by the default policy.
   Remapped dependency paths, core/alloc diagnostics, and precompiled standard-library strings remain visible.
   Unreferenced ELF `rust_metadata_*` exports are now removed together with their non-loaded `.rustc` payload instead of leaving dangling section references.
 

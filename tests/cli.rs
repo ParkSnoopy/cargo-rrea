@@ -12,6 +12,21 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 
+const OPT_OUTS: &[&str] = &[
+    "--no-indbr",
+    "--no-icall",
+    "--no-indgv",
+    "--no-cse",
+    "--no-fla",
+    "--no-cie",
+    "--no-cfe",
+    "--no-mangle-library",
+    "--no-mangle-symbols",
+    "--no-upx",
+    "--no-strip",
+    "--no-remap-paths",
+];
+
 fn cli() -> Command {
     Command::new(env!("CARGO_BIN_EXE_cargo-rrea"))
 }
@@ -99,7 +114,14 @@ fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<
         vec!["build", "--release", "--exclude", "fixture-app"],
         vec!["build", "--release", "--mangle-library"],
         vec!["build", "--no-mangle-library"],
-        vec!["build", "--release", "--keep-symbol", "missing"],
+        vec!["build", "--release", "--mangle-symbols"],
+        vec![
+            "build",
+            "--release",
+            "--no-mangle-symbols",
+            "--keep-symbol",
+            "missing",
+        ],
     ] {
         let output = cli().args(&args).output()?;
         ensure!(
@@ -126,10 +148,11 @@ fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<
         "--locked",
         "--target",
         "--jobs",
-        "--no-mangle-library",
-        "--mangle-symbols",
         "--keep-symbol",
-    ] {
+    ]
+    .into_iter()
+    .chain(OPT_OUTS.iter().copied())
+    {
         ensure!(help.contains(flag), "build help omits {flag}: {help}");
     }
     Ok(())
@@ -222,6 +245,7 @@ fn offline_cache_miss_and_unsupported_targets_do_not_publish() -> Result<()> {
     let output = Command::new(detached)
         .current_dir(root.path())
         .args(["build", "--release", "--offline"])
+        .args(cfg!(windows).then_some("--no-mangle-symbols"))
         .env("XDG_CACHE_HOME", cache.path())
         .env("LOCALAPPDATA", cache.path())
         .output()?;
@@ -283,7 +307,11 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
         ],
         &["--no-mangle-library"],
     ] {
-        verify_native_pipeline(selection)
+        let mut selection = selection.to_vec();
+        if cfg!(windows) {
+            selection.push("--no-mangle-symbols");
+        }
+        verify_native_pipeline(&selection)
             .with_context(|| format!("native build selection: {selection:?}"))?;
     }
     Ok(())
@@ -291,14 +319,14 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "runs packed Rust symbol renaming with both library naming policies"]
-fn real_symbol_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> Result<()> {
-    for selection in [
-        &["--mangle-symbols"][..],
-        &["--mangle-symbols", "--no-mangle-library"],
-    ] {
-        verify_native_pipeline(selection)?;
+#[ignore = "runs every obfuscation opt-out and the all-disabled policy through the native pipeline"]
+fn real_obfuscation_opt_out_pipeline_preserves_behavior() -> Result<()> {
+    for flag in OPT_OUTS {
+        verify_native_pipeline(&[flag]).with_context(|| format!("opt-out {flag}"))?;
+        writeln!(io::stderr().lock(), "verified opt-out {flag}")?;
     }
+    verify_native_pipeline(OPT_OUTS)?;
+    writeln!(io::stderr().lock(), "verified all-disabled policy")?;
     Ok(())
 }
 
@@ -362,14 +390,14 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
     let distribution = verify_distribution(&target, &dist, &paths)?;
     verify_symbol_report(
         &distribution.report,
-        selection.contains(&"--mangle-symbols"),
+        !selection.contains(&"--no-mangle-symbols"),
     )?;
     ensure!(
         distribution.report["mangle_library"] == !selection.contains(&"--no-mangle-library"),
         "incorrect mangling report"
     );
     verify_relocation(root.path(), &distribution, &paths)?;
-    verify_obfuscation(&distribution)?;
+    verify_obfuscation(&distribution, selection)?;
     verify_republication(
         &manifest_directory,
         &target,
@@ -377,6 +405,15 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
         &paths,
         &distribution,
     )?;
+    if selection.is_empty() {
+        verify_policy_switch(
+            &manifest_directory,
+            &target,
+            &baseline,
+            &paths,
+            &distribution,
+        )?;
+    }
     ensure!(
         fs::read(root.path().join("Cargo.toml"))? == manifest
             && fs::read(root.path().join("app/Cargo.toml"))? == member,
@@ -385,25 +422,113 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn verify_obfuscation(distribution: &Distribution) -> Result<()> {
+fn verify_policy_switch(
+    root: &Path,
+    target: &Path,
+    baseline: &Path,
+    paths: &[PathBuf],
+    original: &Distribution,
+) -> Result<()> {
+    let kept = original.report["symbol_mangling"]["renamed"]
+        .as_object()
+        .context("missing symbol map")?
+        .keys()
+        .find(|name| name.contains("fixture_logic"))
+        .context("missing fixture Rust symbol")?;
+    for selection in [&["--no-fla"][..], &[]] {
+        let before = distributions(target)?;
+        success(
+            cargo_cli()?
+                .current_dir(root)
+                .env("CARGO_TARGET_DIR", target)
+                .args([
+                    "build",
+                    "--release",
+                    "--offline",
+                    "--bins",
+                    "--keep-symbol",
+                    kept,
+                ])
+                .args(selection),
+        )?;
+        let reports: Vec<_> = distributions(target)?
+            .into_iter()
+            .filter(|path| !before.contains(path))
+            .collect();
+        ensure!(
+            reports.len() == 1,
+            "policy switch did not publish one report"
+        );
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(reports[0].join("build.json"))?)?;
+        ensure!(
+            report["symbol_mangling"]["retained"][kept] == "Requested",
+            "default-on keep-symbol was not honored"
+        );
+        verify_symbol_report(&report, true)?;
+        verify_obfuscation(
+            &Distribution {
+                path: reports[0].clone(),
+                artifacts: original.artifacts.clone(),
+                report,
+            },
+            selection,
+        )?;
+        verify_behavior(baseline, paths)?;
+    }
+    Ok(())
+}
+
+fn verify_obfuscation(distribution: &Distribution, selection: &[&str]) -> Result<()> {
     let report = &distribution.report;
+    let disabled: BTreeSet<_> = selection
+        .iter()
+        .filter_map(|flag| flag.strip_prefix("--no-"))
+        .collect();
+    let reported: BTreeSet<_> = report["disabled_obfuscation"]
+        .as_array()
+        .context("missing disabled features")?
+        .iter()
+        .map(|name| name.as_str().context("invalid feature"))
+        .collect::<Result<_>>()?;
+    ensure!(disabled == reported, "incorrect disabled feature report");
+    let mut expected: Vec<_> = ["indbr", "icall", "indgv", "cse", "fla", "cie", "cfe"]
+        .into_iter()
+        .filter(|name| !disabled.contains(name))
+        .map(|name| format!("-Cllvm-args=--irobf-{name}"))
+        .collect();
+    if !expected.is_empty() {
+        expected.insert(0, "-Cllvm-args=--irobf".to_owned());
+    }
     ensure!(
-        report["obfuscation"]
-            .as_array()
-            .context("missing flags")?
-            .len()
-            == 8,
-        "unexpected obfuscation flags: {}",
-        report["obfuscation"]
+        report["obfuscation"] == serde_json::to_value(&expected)?,
+        "incorrect LLVM report"
     );
     let invocation_log = report["compiler_invocations"]
         .as_str()
         .context("missing invocation log")?;
     let log = fs::read_to_string(distribution.path.join(invocation_log))?;
     ensure!(
-        log.contains("--irobf-fla") && log.contains("fixture_logic"),
-        "dependency obfuscation or flattening pass is missing"
+        log.contains("fixture_logic"),
+        "dependency invocations are missing"
     );
+    for line in log.lines() {
+        let args: Vec<String> = serde_json::from_str(line)?;
+        let actual: Vec<_> = args
+            .iter()
+            .filter(|arg| arg.starts_with("-Cllvm-args="))
+            .collect();
+        ensure!(
+            actual == expected.iter().collect::<Vec<_>>(),
+            "compiler policy drift"
+        );
+        ensure!(
+            args.iter()
+                .any(|arg| arg.starts_with("--remap-path-prefix="))
+                != disabled.contains("remap-paths"),
+            "incorrect path remapping"
+        );
+    }
     ensure!(
         !log.contains("--crate-name\",\"fixture_literal"),
         "procedural macro received target passes"
@@ -423,10 +548,7 @@ fn verify_republication(
     distribution: &Distribution,
 ) -> Result<()> {
     let dist = manifest_directory.join("target/release/dist");
-    let mangle = distribution.report["mangle_library"]
-        .as_bool()
-        .context("missing mangling status")?;
-    let symbols = !distribution.report["symbol_mangling"].is_null();
+    let opt_outs = policy_arguments(&distribution.report)?;
     fs::write(dist.join("stale.pdb"), b"not a runtime artifact")?;
     let repeated = success(
         cargo_cli()?
@@ -440,8 +562,7 @@ fn verify_republication(
                 "fixture-app",
                 "--bins",
             ])
-            .args((!mangle).then_some("--no-mangle-library"))
-            .args(symbols.then_some("--mangle-symbols")),
+            .args(&opt_outs),
     )?;
     ensure!(
         String::from_utf8(repeated.stdout)?
@@ -456,6 +577,7 @@ fn verify_republication(
         "rebuild retained a nonessential file"
     );
     verify_behavior(baseline, paths)?;
+    verify_rebuilt_policy(target, distribution)?;
     ensure!(
         distribution.artifacts.iter().all(|path| path.is_file())
             && fs::read_dir(&dist)?.count() == distribution.artifacts.len(),
@@ -475,8 +597,7 @@ fn verify_republication(
                 "--bin",
                 "secondary",
             ])
-            .args((!mangle).then_some("--no-mangle-library"))
-            .args(symbols.then_some("--mangle-symbols")),
+            .args(&opt_outs),
     )?;
     ensure!(
         fs::read_dir(&dist)?.count() == 4
@@ -489,6 +610,36 @@ fn verify_republication(
         baseline,
         &[dist.join(format!("secondary{}", std::env::consts::EXE_SUFFIX))],
     )?;
+    Ok(())
+}
+
+fn policy_arguments(report: &serde_json::Value) -> Result<Vec<String>> {
+    report["disabled_obfuscation"]
+        .as_array()
+        .context("missing disabled features")?
+        .iter()
+        .map(|name| {
+            Ok(format!(
+                "--no-{}",
+                name.as_str().context("invalid feature")?
+            ))
+        })
+        .collect()
+}
+
+fn verify_rebuilt_policy(target: &Path, original: &Distribution) -> Result<()> {
+    let reports: Vec<_> = distributions(target)?
+        .into_iter()
+        .filter(|path| *path != original.path)
+        .collect();
+    ensure!(reports.len() == 1, "expected one repeated build");
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(reports[0].join("build.json"))?)?;
+    ensure!(
+        report["disabled_obfuscation"] == original.report["disabled_obfuscation"]
+            && report["obfuscation"] == original.report["obfuscation"],
+        "republication changed policy"
+    );
     Ok(())
 }
 
@@ -591,24 +742,12 @@ fn verify_distribution(target: &Path, dist: &Path, paths: &[PathBuf]) -> Result<
         let path = published[0]
             .join(artifact["path"].as_str().context("missing artifact path")?)
             .canonicalize()?;
-        let data = fs::read(&path)?;
-        let packed = artifact["packed"]
-            .as_bool()
-            .context("missing packing status")?;
-        let header = artifact["packed_audit"]["header_offset"]
-            .as_u64()
-            .context("missing validated pack header")? as usize;
-        // RREA: coordinated format tag, checked at the reported header, not across payload data.
-        let tag = 0xb6e4_a291_u32.to_le_bytes();
-        ensure!(
-            packed && data.get(header..header + 4) == Some(tag.as_slice()),
-            "missing packing or incorrect header: {path:?}"
-        );
+
         ensure!(
             path.parent() == Some(dist),
             "runtime artifact is not in the manifest's distribution directory: {path:?}"
         );
-        verify_packing(&path, artifact)?;
+        verify_packing(&path, artifact, &report, paths.contains(&path))?;
         verify_library_name(&path, artifact, &report)?;
         published_paths.push(path);
     }
@@ -762,16 +901,56 @@ fn verify_library_name(
     Ok(())
 }
 
-fn verify_packing(path: &Path, artifact: &serde_json::Value) -> Result<()> {
+fn verify_packing(
+    path: &Path,
+    artifact: &serde_json::Value,
+    report: &serde_json::Value,
+    executable: bool,
+) -> Result<()> {
     let directory = tempfile::tempdir()?;
     let recovered = directory.path().join("unpacked");
-    success(
-        Command::new(env!("RREA_UPX_PATH"))
-            .args(["--no-env", "--decompress", "-o"])
-            .arg(&recovered)
-            .arg(path),
-    )?;
-    let unpacked = fs::read(recovered)?;
+    let data = fs::read(path)?;
+    let disabled = policy_arguments(report)?;
+    let packed = artifact["packed"]
+        .as_bool()
+        .context("missing packing status")?;
+    ensure!(
+        packed != disabled.iter().any(|arg| arg == "--no-upx"),
+        "incorrect packing policy"
+    );
+    let unpacked = if packed {
+        let header = artifact["packed_audit"]["header_offset"]
+            .as_u64()
+            .context("missing pack header")? as usize;
+        // RREA: coordinated format tag at the validated header, not arbitrary payload data.
+        let tag = 0xb6e4_a291_u32.to_le_bytes();
+        ensure!(
+            data.get(header..header + 4) == Some(tag.as_slice()),
+            "incorrect packed header"
+        );
+        success(
+            Command::new(env!("RREA_UPX_PATH"))
+                .args(["--no-env", "--decompress", "-o"])
+                .arg(&recovered)
+                .arg(path),
+        )?;
+        fs::read(recovered)?
+    } else {
+        ensure!(
+            artifact["packed_audit"].is_null()
+                && artifact["output_sha256"] == artifact["unpacked_sha256"],
+            "unpacked report claims packing or changed bytes"
+        );
+        data
+    };
+    if executable {
+        use object::Object;
+        let file = object::File::parse(unpacked.as_slice())?;
+        ensure!(
+            file.symbols().next().is_some() == disabled.iter().any(|arg| arg == "--no-strip"),
+            "incorrect static-symbol stripping"
+        );
+    }
     if let object::File::Elf64(elf) = object::File::parse(unpacked.as_slice())? {
         let table = elf
             .elf_section_table()
@@ -878,15 +1057,17 @@ fn verify_failed_publication(
             "--offline",
         ])
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env("RUSTFLAGS", "-Cdebuginfo=2")
+        .args(policy_arguments(&distribution.report)?)
+        .env("RUSTFLAGS", "-Cllvm-args=--inline-threshold=1")
         .output()?;
     ensure!(
         !failed.status.success(),
         "conflicting protection flags succeeded"
     );
     ensure!(
-        String::from_utf8_lossy(&failed.stderr).contains("conflicts with rrea protection"),
-        "missing protection conflict diagnostic"
+        String::from_utf8_lossy(&failed.stderr).contains("external LLVM arguments conflict"),
+        "missing protection conflict diagnostic: {}",
+        String::from_utf8_lossy(&failed.stderr)
     );
     if !distribution.report["symbol_mangling"].is_null() {
         let failed = cli()
@@ -899,11 +1080,10 @@ fn verify_failed_publication(
                 "--package",
                 "fixture-app",
                 "--bins",
-                "--mangle-symbols",
                 "--keep-symbol",
                 "missing-symbol",
             ])
-            .args((distribution.report["mangle_library"] == false).then_some("--no-mangle-library"))
+            .args(policy_arguments(&distribution.report)?)
             .output()?;
         ensure!(
             !failed.status.success()

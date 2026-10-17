@@ -29,11 +29,14 @@ Run inside the Rust project you want to build:
 cargo rrea build --release
 ```
 
-`build` temporarily disables debug information and strips symbols without editing `Cargo.toml`.  
-`build` requires `--release` (or `-r`); development profiles are not supported.
-Library names are mangled by default; pass `--no-mangle-library` to keep their original names.
-ELF Rust symbol renaming is separately opt-in with `--mangle-symbols`, under the [closed-bundle contract](docs/rust-fingerprints.md#closed-bundle-symbol-map).  
-Preserve externally consumed or runtime-looked-up Rust names with `--keep-symbol NAME`; Windows symbol renaming is not supported.  
+`build --release` enables all implemented obfuscation features by default, including library and ELF Rust symbol mangling.  
+Individual `--no-<feature>` switches disable only that feature, such as `--no-fla`, `--no-mangle-symbols`, or `--no-upx`.  
+The complete [feature contract](docs/architecture.md#obfuscation-policy) defines pass selection, stripping, path remapping, and packing.  
+Stripping temporarily disables debug information and removes metadata without editing `Cargo.toml`; `--no-strip` retains the project's debug/strip settings.  
+`build` requires `--release` (or `-r`); development profiles are not supported.  
+The default follows the [closed-bundle symbol contract](docs/rust-fingerprints.md#closed-bundle-symbol-map).  
+Externally consumed or runtime-looked-up Rust names require `--keep-symbol NAME`, unless symbol mangling is disabled.  
+Windows currently requires `--no-mangle-symbols`; unsupported default features fail before building rather than silently weakening protection.  
 
 Select a package and executable, or build with an already cached toolchain offline:
 
@@ -49,7 +52,7 @@ This destination does not follow a custom Cargo target directory.
 For a virtual workspace manifest, the destination is beneath the workspace root.
 Distribute the complete `dist` directory.
 Reports and logs stay in Cargo's target directory under `rrea/dist-<id>/`, outside the distribution.
-The pipeline packs executables and shared libraries.
+The pipeline packs executables and shared libraries unless `--no-upx` is selected.  
 The bundled UPX patch removes known identification banners, PE section labels, and named runtime mappings, and changes packer/stub tags together.
 The matching patched packer can decompress the output; stock UPX does not support its modified format.
 

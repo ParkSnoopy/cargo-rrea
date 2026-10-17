@@ -3,12 +3,14 @@
 ## Current policy
 
 Library filename mangling and Rust symbol renaming are independent policies.
-Filename mangling remains enabled by default.
-The optional `--mangle-symbols` policy renames eligible ELF64 Rust dynamic symbols across the reachable bundle using [symbol planning](../src/symbols.rs) and the existing [metadata writer](../src/mangle.rs).
-It is disabled by default and rejected on Windows before project builds or tool acquisition.
+Both are enabled by default under the [maximum-feature policy](architecture.md#obfuscation-policy).
+`--no-mangle-library` and `--no-mangle-symbols` disable them independently.
+Symbol renaming covers eligible ELF64 Rust dynamic symbols across the reachable bundle using [symbol planning](../src/symbols.rs) and the existing [metadata writer](../src/mangle.rs).
+Windows requires explicit `--no-mangle-symbols`; otherwise the unsupported feature fails before project builds or tool acquisition.
 The historical [evaluation](evaluation.md) predates symbol renaming and found the same exported-symbol multiset with and without filename mangling.
 
-The pipeline rejects retained static/debug metadata, prohibited local build paths, undeclared runtime import/export changes, and malformed packing metadata.
+The default pipeline rejects retained static/debug metadata, prohibited local build paths, undeclared runtime import/export changes, and malformed packing metadata.
+Explicit stripping, remapping, or packing opt-outs disable only their corresponding checks, never runtime-metadata preservation.
 ELF audits also compare symbol addresses, sizes, binding/type/visibility, section ownership, GNU versions, and relocation targets/addends against the declared transformation.
 It reports Rust runtime hints without overwriting loaded bytes.
 A substring alone does not identify its origin: cargo-rrea itself contains the audit's search literals.
@@ -31,7 +33,8 @@ Rebuilding the standard library would also need a pinned source/toolchain workfl
 
 ## Closed-bundle symbol map
 
-`--mangle-symbols` asserts that all selected Rust interfaces are internal to the bundle except names explicitly preserved with repeated `--keep-symbol NAME` arguments.
+The default build contract requires all selected Rust interfaces to be internal to the bundle except names explicitly preserved with repeated `--keep-symbol NAME` arguments.
+`--no-mangle-symbols` opts out of this contract, and cannot be combined with `--keep-symbol`.
 This includes runtime lookup, plugins, external consumers, and intentional Rust-symbol interposition.
 The tool cannot infer those consumers from the static dependency graph.
 Keep-symbol values must identify existing Rust-mangled dynamic names; misspellings fail before publication.
@@ -78,7 +81,8 @@ Reuse the existing linker-time metadata reserve and fail if a valid layout canno
 Removing `.rustc` with `llvm-objcopy` alone can leave a dynamic compiler-metadata export with an invalid section index.
 The planner therefore identifies only unreferenced, non-loaded, zero-address `rust_metadata_*` objects in that section, and the writer removes their dynamic records and rebuilds hashes before stripping.
 Unexpected exported metadata or a bundled consumer/relocation referencing it fails instead of leaving a dangling export or deleting a runtime interface.
-This cleanup applies even when symbol renaming and library filename mangling are disabled.
+This cleanup applies while stripping is enabled, even when symbol renaming and library filename mangling are disabled.
+`--no-strip` preserves compiler metadata and its exports together instead of producing dangling references.
 
 ### PE32+
 
@@ -102,7 +106,7 @@ An artifact failure must preserve the previous complete published distribution.
 Acceptance needs default and opt-out policies, determinism, collision rejection, ambiguous/weak definitions, ELF versioned symbols, TLS/IFUNCs, PE delay imports/forwarders/ordinals, and runtime-name lookup exclusions.
 Run real allocation, relocation, panic/unwind, missing-dependency, and behavior fixtures on both native platforms.
 Evaluate loader cost and whole-bundle size, not only the executable filename.
-Only then consider changing a default.
+Default-on selection does not establish these remaining cross-platform or cost-evaluation gates.
 The [ELF loader fixtures](../tests/symbols/mod.rs) exercise GNU-only, SysV-only, and combined hashes, versioned symbols, weak bindings, TLS, IFUNCs, explicit `dlsym` preservation, ambiguous/external definitions, collisions, and referenced-metadata rejection.
 They compare loaded code/data/unwind bytes and addresses and run both eager and lazy symbol binding.
 The [packed Rust fixture](../tests/cli.rs) exercises symbol renaming with both filename policies, allocation, panic/unwind, relocation, missing dependencies, republication, and failed-plan preservation.

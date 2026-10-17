@@ -7,15 +7,52 @@
 `cargo rrea build --release` and direct `cargo-rrea build --release` invocation select the same pipeline.
 Build flags belong to the `build` subcommand, not the root command.
 `build` requires explicit `--release` (or `-r`); development and custom profiles are not supported.
-The pipeline packs executables and required Rust shared libraries.
+The default enables every implemented obfuscation feature and packs executables and required Rust shared libraries.
 
-`build` applies `debug = 0` and `strip = "symbols"` through command-local Cargo configuration.
+Unless `--no-strip` is selected, `build` applies `debug = 0` and `strip = "symbols"` through command-local Cargo configuration.
 It does not edit any `Cargo.toml`, including on failed builds.
 Project profile settings, comments, and the panic strategy remain unchanged on disk.
 
 Application builds select the acquired Arkari compiler and matching sysroot without changing the active Rust installation.
 A compiler failure stops the build without ordinary-rustc fallback.
 Cargo still uses its active toolchain to compile and test `cargo-rrea` itself; bootstrap prepares Arkari for the application pipeline rather than replacing Cargo's compiler mid-build.
+
+## Obfuscation policy
+
+The [feature registry](../src/obfuscation.rs) owns the CLI opt-outs and LLVM flag selection.
+Maximum obfuscation means all implemented features enabled, not an assertion that output is fingerprint-free or that compiler-defined pass levels were increased.
+Each switch disables one independent feature:
+
+| Switch | Disabled transformation |
+| --- | --- |
+| `--no-indbr` | Arkari indirect branches |
+| `--no-icall` | Arkari indirect calls |
+| `--no-indgv` | Arkari indirect global-variable references |
+| `--no-cse` | Arkari constant-string encryption |
+| `--no-fla` | Arkari control-flow flattening |
+| `--no-cie` | Arkari constant-integer encryption |
+| `--no-cfe` | Arkari constant-floating-point encryption |
+| `--no-mangle-library` | Library filename and loader-reference mangling |
+| `--no-mangle-symbols` | Closed-bundle Rust dynamic-symbol renaming |
+| `--no-upx` | Runtime UPX packing and packing-specific checks |
+| `--no-strip` | Forced debug/strip profile overrides and post-link metadata/static-symbol stripping |
+| `--no-remap-paths` | Compiler path remapping and absolute-build-path rejection |
+
+The Arkari master gate is emitted only when at least one of its seven passes is selected.
+Disabling every pass leaves the same acquired compiler, linkage, and remaining transformations, with no injected obfuscation LLVM flags.
+The selected feature set is serialized into the shared compiler policy and contributes to the build-cache key.
+The wrapper, post-link stages, and reports consume that policy rather than independent defaults.
+External LLVM arguments remain rejected, even when all passes are disabled, so they cannot silently override the selection.
+LTO restrictions, runtime-metadata comparisons, input integrity, and atomic publication remain mandatory.
+`--no-strip` does not disable path checking, and `--no-remap-paths` does not disable stripping.
+Disabling these protections can expose metadata or local paths; the opt-outs are recorded in each report.
+`--no-upx` does not remove the bundled helper or its installation prerequisites, but no UPX subprocess runs for that build.
+
+ELF symbol renaming is default-on under the closed-bundle contract below.
+`--keep-symbol NAME` retains a specific externally required Rust name and conflicts with `--no-mangle-symbols`.
+The retired positive `--mangle-symbols` switch is rejected.
+Unsupported selected features fail before metadata discovery, downloads, or compilation.
+Because PE symbol renaming is not implemented, Windows builds currently require explicit `--no-mangle-symbols`.
 
 ## Cargo bootstrap and tool ownership
 
@@ -89,10 +126,10 @@ Build scripts and procedural macros remain host-side and do not receive the targ
 
 Application builds override the release profile's cross-crate LTO setting with `lto = false` without editing the project's manifest.
 Cargo must emit native objects for dependencies that the wrapper also builds as shared libraries, rather than bitcode-only linker-plugin inputs.
-This retains Cargo's default local ThinLTO where applicable and all fixed obfuscation passes.
+This retains Cargo's default local ThinLTO where applicable and the selected obfuscation passes.
 Explicit compiler flags that enable LTO or linker-plugin LTO are rejected because they conflict with this shared-library layout.
 
-The pipeline strips nonessential metadata and packs executables and required Rust shared libraries.
+The pipeline applies the selected stripping and packing stages to executables and required Rust shared libraries.
 Runtime inclusion follows the actual ELF/PE import-library graph from the selected executables.
 Only reachable generated Rust libraries and the compiler's dynamic standard library enter the distribution.
 Linux executables locate adjacent libraries through `$ORIGIN`.
@@ -104,17 +141,19 @@ The reserve scales with the dependency graph and includes alignment slack.
 Sanitization reduces that padded path back to `$ORIGIN` before rebuilding loader metadata, without changing unrelated search paths.
 This keeps code, data, and unwind addresses unchanged while leaving loader metadata below the UPX stub, including for tightly packed ELF layouts.
 
-`--mangle-symbols` independently enables closed-bundle ELF Rust symbol renaming.
-It asserts that all externally consumed or runtime-looked-up Rust names are listed with `--keep-symbol NAME`.
-The default leaves runtime symbol names unchanged, and Windows rejects the opt-in before building.
+Closed-bundle ELF Rust symbol renaming is enabled unless `--no-mangle-symbols` is selected.
+The build contract requires all externally consumed or runtime-looked-up Rust names to be listed with `--keep-symbol NAME` when renaming is enabled.
+Windows rejects symbol renaming before building, including when selected by default.
 The [symbol policy](rust-fingerprints.md) defines eligibility, explicit exclusions, deterministic names, and remaining platform obligations.
 The complete reachable bundle is inspected before any transformation is selected.
 One shared map updates definitions and consumers through the existing ELF builder, including GNU/SysV hashes, GNU version arrays, and symbol-index relocations.
 The runtime audit checks addresses, sizes, section ownership, binding/type/visibility, versions, and relocation identities against the expected map.
-Unreferenced, non-loaded `rust_metadata_*` exports in `.rustc` are removed before stripping in either symbol policy, preventing dangling section references.
-Unexpected exported metadata or a bundled reference to compiler metadata fails before publication.
+When stripping is enabled, unreferenced, non-loaded `rust_metadata_*` exports in `.rustc` are removed first in either symbol policy, preventing dangling section references.
+Unexpected exported metadata or a bundled reference to compiler metadata fails instead of being stripped.
+With `--no-strip`, compiler metadata and its exports remain together.
 
-Publication follows stripping, metadata audits, UPX integrity checks, and decompression audits in a staging directory.
+Publication follows the selected transformations and their audits in a staging directory.
+Disabling stripping or packing never disables runtime-metadata preservation checks.
 The UPX overlay removes emitted identification banners, renames PE sections, anonymizes Linux memfd names, and coordinates non-text format tags in the packer and rebuilt x86_64 runtime stubs.
 Native PE64 packing preserves the original import/export layout in the compressed source image while retaining the packed image's runtime tables.
 Offline recovery restores those source bytes instead of reconstructing the tables into a different layout.
@@ -138,6 +177,8 @@ Reports and Cargo/compiler logs stay under Cargo's target directory as `rrea/dis
 The report records compiler release provenance, the UPX source commit, overlay and stub-archive SHA-256 values, executable hash, packing status, artifact hashes, audit results, and known limits.
 `symbol_mangling` is null when renaming is disabled and otherwise records the exact map and retention reasons.
 `removed_metadata_symbols` records compiler-only export removals independently of renaming.
+`disabled_obfuscation` lists explicit feature opt-outs; `obfuscation` records the actual injected LLVM flags.
+Without packing, artifacts have `packed = false`, null `packed_audit`, and identical unpacked/output sizes and hashes.
 Artifact paths are absolute distribution paths.
 Log paths resolve against the report directory.
 
@@ -146,6 +187,7 @@ Log paths resolve against the report directory.
 | File | Responsibility |
 | --- | --- |
 | [src/main.rs](../src/main.rs) | Cargo invocation and build-selection arguments |
+| [src/obfuscation.rs](../src/obfuscation.rs) | Shared default-on feature registry, CLI opt-outs, and LLVM flag selection |
 | [src/project.rs](../src/project.rs) | Cargo command selection and shared process/lock access |
 | [src/support.rs](../src/support.rs) | Shared child-process checks and file locks |
 | [build.rs](../build.rs) | Compiler bootstrap, pinned UPX source validation, native compilation, and embedding |
@@ -225,7 +267,7 @@ Run from the repository root:
 cargo fmt --check
 cargo test
 cargo test --test cli real_native_pipeline -- --ignored --nocapture
-cargo test --test cli real_symbol_pipeline -- --ignored --nocapture
+cargo test --test cli real_obfuscation_opt_out_pipeline -- --ignored --nocapture
 cargo build --release
 cargo run -- --help
 cargo clippy --all-targets
@@ -246,7 +288,9 @@ The mangled Linux case uses a tightly packed ELF layout and checks that search-p
 It checks the coordinated packing headers, patch/stub provenance, and byte-identical recovery using the matching patched packer.
 The marker regression preserves application/overlay strings while rejecting old tags and corrupted checksums at real header locations.
 The ELF symbol fixture uses the native C compiler and linker to exercise GNU-only, SysV-only, and combined hash tables, versioned exports, TLS, IFUNCs, weak symbols, and a retained `dlsym` name.
-The symbol-enabled native Rust test reuses the full pipeline fixture with both filename policies and rejects unknown keep-symbol names without replacing the previous distribution.
+The default native Rust test exercises symbol renaming with both filename policies and rejects unknown keep-symbol names without replacing the previous distribution.
+It switches a populated cache from the default policy to `--no-fla` and back, checking actual compiler invocations and explicit symbol retention.
+The opt-out matrix exercises every feature disabled individually and all features disabled together, checking runtime behavior, packing/stripping state, exact reports, relocation, republication, and failed-publication preservation.
 The ignored [Base116 evaluator](../tests/evaluation/mod.rs) records behavior, full artifact inventories, and round-robin timing observations for six prepared variants.
 See the [evaluation](evaluation.md) for its procedure, measurements, and evidence limits.
 

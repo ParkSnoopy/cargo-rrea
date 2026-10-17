@@ -11,12 +11,16 @@ use cargo_metadata::{DependencyKind, Metadata, TargetKind};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::{BuildOptions, project};
+use crate::{
+    BuildOptions,
+    obfuscation::{Feature, Obfuscation},
+    project,
+};
 
 #[derive(Deserialize, Serialize)]
 pub struct Policy {
     sources: BTreeMap<PathBuf, String>,
-    mangle_library: bool,
+    pub obfuscation: Obfuscation,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -107,7 +111,7 @@ impl Policy {
 
         Ok(Self {
             sources,
-            mangle_library: options.mangle_library,
+            obfuscation: options.obfuscation.clone(),
         })
     }
 }
@@ -142,10 +146,9 @@ pub fn value<'a>(args: &'a [OsString], key: &str) -> Option<&'a str> {
 
 pub fn adapt(
     args: &mut Vec<OsString>,
-    policy_path: &Path,
+    policy: &Policy,
     library_log: &Path,
 ) -> Result<Option<Library>> {
-    let policy: Policy = serde_json::from_slice(&fs::read(policy_path)?)?;
     let direct = args
         .iter()
         .filter_map(|arg| arg.to_str())
@@ -201,7 +204,7 @@ pub fn adapt(
     if cfg!(target_os = "linux") {
         // Reserve 16 bytes per possible renamed dependency, plus alignment slack.
         // Repeated /. components resolve to the same directory and are removed later.
-        let padding = if policy.mangle_library {
+        let padding = if policy.obfuscation.enabled(Feature::MangleLibrary) {
             "/.".repeat(8 * (policy.sources.len() + 4))
         } else {
             String::new()

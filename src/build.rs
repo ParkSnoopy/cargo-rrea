@@ -13,32 +13,22 @@ use fs2::FileExt;
 use object::{Object, ObjectSection};
 use serde::Serialize;
 
-use crate::{BuildOptions, audit, dynamic, mangle, project, symbols, tools};
-
-const OBFUSCATION: &[&str] = &[
-    "-Cllvm-args=--irobf",
-    "-Cllvm-args=--irobf-indbr",
-    "-Cllvm-args=--irobf-icall",
-    "-Cllvm-args=--irobf-indgv",
-    "-Cllvm-args=--irobf-cse",
-    "-Cllvm-args=--irobf-fla",
-    "-Cllvm-args=--irobf-cie",
-    "-Cllvm-args=--irobf-cfe",
-];
+use crate::{
+    BuildOptions,
+    audit,
+    dynamic,
+    mangle,
+    obfuscation::{Feature, Obfuscation},
+    project,
+    symbols,
+    tools,
+};
 
 pub fn run(options: &BuildOptions) -> Result<()> {
     let target = check_target(options)?;
+    let obfuscation = &options.obfuscation;
     let metadata = metadata(options)?;
-    let manifest_directory = match metadata.root_package() {
-        Some(package) => {
-            package
-                .manifest_path
-                .parent()
-                .context("manifest has no parent")?
-                .as_std_path()
-        }
-        None => metadata.workspace_root.as_std_path(),
-    };
+    let manifest_directory = manifest_directory(&metadata)?;
     let distribution = manifest_directory.join("target/release/dist");
     let root = metadata.target_directory.as_std_path().join("rrea");
     fs::create_dir_all(&root)?;
@@ -47,7 +37,7 @@ pub fn run(options: &BuildOptions) -> Result<()> {
     let _publication_lock = project::lock(&publication_root.join("publish.lock"))?;
     let _lock = project::lock(&root.join("build.lock"))?;
     let tools = tools::acquire(options.network.offline || options.network.frozen)?;
-    let compiler_version = check_tools(&tools, target)?;
+    let compiler_version = check_tools(&tools, target, obfuscation)?;
     let sysroot = tools
         .compiler
         .parent()
@@ -80,13 +70,15 @@ pub fn run(options: &BuildOptions) -> Result<()> {
     let prohibited: Vec<_> = prepared
         .prohibited_paths
         .iter()
+        .filter(|_| obfuscation.enabled(Feature::RemapPaths))
         .map(PathBuf::as_path)
         .collect();
     let symbol_plan = symbols::plan(
         &artifacts,
-        options
-            .mangle_symbols
+        obfuscation
+            .enabled(Feature::MangleSymbols)
             .then_some(options.keep_symbols.as_slice()),
+        obfuscation.enabled(Feature::Strip),
     )?;
     let mut outputs = prepare_artifacts(
         artifacts,
@@ -95,6 +87,7 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         &names,
         &symbol_plan,
         &prohibited,
+        obfuscation,
     )?;
     for output in &mut outputs {
         output.path = distribution.join(&output.path);
@@ -104,9 +97,12 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         compiler: &tools.compiler_release,
         upx: &tools.upx_build,
         compiler_version: &compiler_version,
-        obfuscation: OBFUSCATION,
-        mangle_library: options.mangle_library,
-        symbol_mangling: options.mangle_symbols.then_some(&symbol_plan),
+        obfuscation: &obfuscation.llvm_flags(),
+        disabled_obfuscation: &obfuscation.disabled,
+        mangle_library: obfuscation.enabled(Feature::MangleLibrary),
+        symbol_mangling: obfuscation
+            .enabled(Feature::MangleSymbols)
+            .then_some(&symbol_plan),
         removed_metadata_symbols: &symbol_plan.removed_metadata,
         cargo_log: Path::new("cargo.jsonl"),
         compiler_invocations: Path::new("rustc-invocations.jsonl"),
@@ -125,6 +121,19 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         &report,
     )?;
     print_distribution(&distribution, &executables, &destination)
+}
+
+fn manifest_directory(metadata: &Metadata) -> Result<&Path> {
+    match metadata.root_package() {
+        Some(package) => {
+            Ok(package
+                .manifest_path
+                .parent()
+                .context("manifest has no parent")?
+                .as_std_path())
+        }
+        None => Ok(metadata.workspace_root.as_std_path()),
+    }
 }
 
 fn print_distribution(
@@ -154,15 +163,18 @@ fn check_target(options: &BuildOptions) -> Result<&'static str> {
         "cross-compilation is not supported; target must be {target}"
     );
     ensure!(
-        !options.mangle_symbols || target == "x86_64-unknown-linux-gnu",
-        "symbol mangling is supported only for Linux ELF64 closed bundles"
+        !options.obfuscation.enabled(Feature::MangleSymbols)
+            || target == "x86_64-unknown-linux-gnu",
+        "symbol mangling is supported only for Linux ELF64 closed bundles; use --no-mangle-symbols on this target"
     );
     Ok(target)
 }
 
-fn check_tools(tools: &tools::Tools, target: &str) -> Result<String> {
-    project::checked_output(Command::new(&tools.objcopy).arg("--version"))
-        .context("downloaded llvm-objcopy cannot sanitize executable metadata")?;
+fn check_tools(tools: &tools::Tools, target: &str, obfuscation: &Obfuscation) -> Result<String> {
+    if obfuscation.enabled(Feature::Strip) {
+        project::checked_output(Command::new(&tools.objcopy).arg("--version"))
+            .context("downloaded llvm-objcopy cannot sanitize executable metadata")?;
+    }
     let version = project::checked_output(Command::new(&tools.compiler).arg("-vV"))?;
     let version = String::from_utf8(version.stdout)?;
     ensure!(
@@ -171,7 +183,9 @@ fn check_tools(tools: &tools::Tools, target: &str) -> Result<String> {
             .any(|line| line == format!("host: {target}")),
         "downloaded compiler host does not match {target}"
     );
-    project::checked_output(Command::new(&tools.upx).arg("--version"))?;
+    if obfuscation.enabled(Feature::Upx) {
+        project::checked_output(Command::new(&tools.upx).arg("--version"))?;
+    }
     Ok(version)
 }
 
@@ -237,12 +251,18 @@ fn prepare_build(
         ("build.rustc", path_value(&tools.compiler)?),
         ("build.rustc-wrapper", path_value(&wrapper)?),
         ("build.rustc-workspace-wrapper", "\"\"".to_owned()),
-        ("profile.release.debug", "0".to_owned()),
-        ("profile.release.strip", "\"symbols\"".to_owned()),
         ("profile.release.incremental", "false".to_owned()),
         ("profile.release.lto", "false".to_owned()),
     ] {
         command.arg("--config").arg(format!("{key}={value}"));
+    }
+    if options.obfuscation.enabled(Feature::Strip) {
+        command.args([
+            "--config",
+            "profile.release.debug=0",
+            "--config",
+            "profile.release.strip=\"symbols\"",
+        ]);
     }
     build_arguments(&mut command, options);
     Ok(PreparedBuild {
@@ -292,7 +312,7 @@ fn add_runtime_libraries(
         for dependency in audit::inspect(&artifact, false, &[])?.libraries {
             let name = PathBuf::from(&dependency);
             if let Some((library, identity)) = candidates.remove(&name) {
-                if options.mangle_library {
+                if options.obfuscation.enabled(Feature::MangleLibrary) {
                     let mangled = mangle::name(&dependency, &identity)?;
                     ensure!(
                         !artifacts.contains_key(Path::new(&mangled)),
@@ -322,6 +342,7 @@ fn prepare_artifacts(
     names: &BTreeMap<String, String>,
     symbols: &symbols::Plan,
     prohibited: &[&Path],
+    obfuscation: &Obfuscation,
 ) -> Result<Vec<ArtifactReport>> {
     let mut outputs = Vec::new();
 
@@ -330,7 +351,8 @@ fn prepare_artifacts(
         let relative = Path::new(names.get(name).map_or(name, String::as_str));
         writeln!(io::stderr().lock(), "sanitizing {}", relative.display())?;
         let clean = staging.join(relative);
-        let unpacked_audit = sanitize(&original, &clean, tools, names, symbols, prohibited)?;
+        let strip = obfuscation.enabled(Feature::Strip);
+        let unpacked_audit = sanitize(&original, &clean, tools, names, symbols, prohibited, strip)?;
         let unpacked_sha256 = tools::sha256(&clean)?;
         let unpacked_bytes = fs::metadata(&clean)?.len();
         if !unpacked_audit.rust_string_hints.is_empty() {
@@ -341,47 +363,22 @@ fn prepare_artifacts(
                 unpacked_audit.rust_string_hints.join(", ")
             )?;
         }
-        let packed_audit = {
-            writeln!(io::stderr().lock(), "packing {}", relative.display())?;
-            let packed = clean.with_extension("rrea-packed");
-            let mut pack = Command::new(&tools.upx);
-            pack.args(["--no-env", "--best", "--overlay=copy"]);
-            if cfg!(windows) {
-                pack.args([
-                    "--strip-relocs=0",
-                    "--compress-exports=0",
-                    "--compress-resources=0",
-                ]);
-            }
-            project::checked_output(pack.arg("-o").arg(&packed).arg(&clean))?;
-            project::checked_output(
-                Command::new(&tools.upx)
-                    .args(["--no-env", "--test"])
-                    .arg(&packed),
-            )?;
-            audit::inspect(&packed, true, prohibited)?;
-            let recovered = clean.with_extension("rrea-recovered");
-            project::checked_output(
-                Command::new(&tools.upx)
-                    .args(["--no-env", "--decompress", "-o"])
-                    .arg(&recovered)
-                    .arg(&packed),
-            )?;
-            let recovered_audit = audit::inspect(&recovered, true, prohibited)?;
-            audit::same_runtime_metadata(&unpacked_audit, &recovered_audit)?;
-            ensure!(
-                tools::sha256(&recovered)? == unpacked_sha256,
-                "UPX recovery changed executable bytes"
-            );
-            let packed_audit = audit::validate_packed(&packed)?;
-            fs::remove_file(&clean)?;
-            fs::remove_file(&recovered)?;
-            fs::rename(&packed, &clean)?;
-            packed_audit
-        };
+        let packed_audit = obfuscation
+            .enabled(Feature::Upx)
+            .then(|| {
+                pack_artifact(
+                    &clean,
+                    tools,
+                    &unpacked_audit,
+                    &unpacked_sha256,
+                    prohibited,
+                    strip,
+                )
+            })
+            .transpose()?;
         outputs.push(ArtifactReport {
             path: relative.to_path_buf(),
-            packed: true,
+            packed: packed_audit.is_some(),
             unpacked_bytes,
             unpacked_sha256,
             output_bytes: fs::metadata(&clean)?.len(),
@@ -393,6 +390,52 @@ fn prepare_artifacts(
     Ok(outputs)
 }
 
+fn pack_artifact(
+    clean: &Path,
+    tools: &tools::Tools,
+    unpacked_audit: &audit::Inspection,
+    unpacked_sha256: &str,
+    prohibited: &[&Path],
+    strip: bool,
+) -> Result<audit::PackedInspection> {
+    writeln!(io::stderr().lock(), "packing {}", clean.display())?;
+    let packed = clean.with_extension("rrea-packed");
+    let mut pack = Command::new(&tools.upx);
+    pack.args(["--no-env", "--best", "--overlay=copy"]);
+    if cfg!(windows) {
+        pack.args([
+            "--strip-relocs=0",
+            "--compress-exports=0",
+            "--compress-resources=0",
+        ]);
+    }
+    project::checked_output(pack.arg("-o").arg(&packed).arg(clean))?;
+    project::checked_output(
+        Command::new(&tools.upx)
+            .args(["--no-env", "--test"])
+            .arg(&packed),
+    )?;
+    audit::inspect(&packed, strip, prohibited)?;
+    let recovered = clean.with_extension("rrea-recovered");
+    project::checked_output(
+        Command::new(&tools.upx)
+            .args(["--no-env", "--decompress", "-o"])
+            .arg(&recovered)
+            .arg(&packed),
+    )?;
+    let recovered_audit = audit::inspect(&recovered, strip, prohibited)?;
+    audit::same_runtime_metadata(unpacked_audit, &recovered_audit)?;
+    ensure!(
+        tools::sha256(&recovered)? == unpacked_sha256,
+        "UPX recovery changed executable bytes"
+    );
+    let packed_audit = audit::validate_packed(&packed)?;
+    fs::remove_file(clean)?;
+    fs::remove_file(&recovered)?;
+    fs::rename(&packed, clean)?;
+    Ok(packed_audit)
+}
+
 fn sanitize(
     original: &Path,
     clean: &Path,
@@ -400,6 +443,7 @@ fn sanitize(
     names: &BTreeMap<String, String>,
     symbols: &symbols::Plan,
     prohibited: &[&Path],
+    strip: bool,
 ) -> Result<audit::Inspection> {
     let mut original_audit = audit::inspect(original, false, &[])?;
     fs::create_dir_all(clean.parent().context("artifact has no parent")?)?;
@@ -411,18 +455,22 @@ fn sanitize(
         mangle::rewrite(&mangled, names, symbols, &mut original_audit)?;
         mangled.as_path()
     };
-    let data = fs::read(source)?;
-    let object = object::File::parse(data.as_slice())?;
-    let mut strip = Command::new(&tools.objcopy);
-    strip.arg("--strip-all");
-    for section in object.sections() {
-        let name = section.name()?;
-        if audit::unwanted_section(name) {
-            strip.arg(format!("--remove-section={name}"));
+    if strip {
+        let data = fs::read(source)?;
+        let object = object::File::parse(data.as_slice())?;
+        let mut strip = Command::new(&tools.objcopy);
+        strip.arg("--strip-all");
+        for section in object.sections() {
+            let name = section.name()?;
+            if audit::unwanted_section(name) {
+                strip.arg(format!("--remove-section={name}"));
+            }
         }
+        project::checked_output(strip.arg(source).arg(clean))?;
+    } else {
+        fs::copy(source, clean)?;
     }
-    project::checked_output(strip.arg(source).arg(clean))?;
-    let unpacked_audit = audit::inspect(clean, true, prohibited)?;
+    let unpacked_audit = audit::inspect(clean, strip, prohibited)?;
     audit::same_runtime_metadata(&original_audit, &unpacked_audit)?;
     if !names.is_empty() || !symbols.is_empty() {
         fs::remove_file(mangled)?;
@@ -695,30 +743,41 @@ pub fn rustc_wrapper() -> Result<()> {
             .iter()
             .any(|arg| arg == OsStr::new(&format!("--target={target}")));
     if target_build {
-        validate_flags(&args)?;
+        let policy: dynamic::Policy = serde_json::from_slice(&fs::read(
+            std::env::var_os("RREA_POLICY").context("missing dynamic policy")?,
+        )?)?;
+        validate_flags(&args, policy.obfuscation.enabled(Feature::Strip))?;
         generated_library = dynamic::adapt(
             &mut args,
-            Path::new(&std::env::var_os("RREA_POLICY").context("missing dynamic policy")?),
+            &policy,
             Path::new(&std::env::var_os("RREA_LIBRARIES").context("missing library log")?),
         )?;
-        args.extend(OBFUSCATION.iter().map(OsString::from));
-        // Order matters: more specific generated paths must override the workspace prefix.
-        for (variable, replacement) in [
-            ("RREA_WORKSPACE", "/src"),
-            ("RREA_CARGO_HOME", "/deps"),
-            ("RREA_SYSROOT", "/toolchain"),
-            ("RREA_BUILD_DIR", "/build"),
-        ] {
-            let from = std::env::var(variable)?;
-            args.push(format!("--remap-path-prefix={from}={replacement}").into());
-            if cfg!(windows) {
-                args.push(
-                    format!(
-                        "--remap-path-prefix={}={replacement}",
-                        from.replace('\\', "/")
-                    )
-                    .into(),
-                );
+        args.extend(
+            policy
+                .obfuscation
+                .llvm_flags()
+                .into_iter()
+                .map(OsString::from),
+        );
+        if policy.obfuscation.enabled(Feature::RemapPaths) {
+            // Order matters: more specific generated paths must override the workspace prefix.
+            for (variable, replacement) in [
+                ("RREA_WORKSPACE", "/src"),
+                ("RREA_CARGO_HOME", "/deps"),
+                ("RREA_SYSROOT", "/toolchain"),
+                ("RREA_BUILD_DIR", "/build"),
+            ] {
+                let from = std::env::var(variable)?;
+                args.push(format!("--remap-path-prefix={from}={replacement}").into());
+                if cfg!(windows) {
+                    args.push(
+                        format!(
+                            "--remap-path-prefix={}={replacement}",
+                            from.replace('\\', "/")
+                        )
+                        .into(),
+                    );
+                }
             }
         }
         let log =
@@ -753,14 +812,14 @@ pub fn rustc_wrapper() -> Result<()> {
     Ok(())
 }
 
-fn validate_flags(args: &[OsString]) -> Result<()> {
+fn validate_flags(args: &[OsString], strip_enabled: bool) -> Result<()> {
     let mut index = 0;
     while index < args.len() {
         let value = args[index]
             .to_str()
             .context("compiler arguments must be UTF-8")?;
         ensure!(
-            value != "-g",
+            !strip_enabled || value != "-g",
             "debug information conflicts with rrea protection"
         );
         ensure!(
@@ -786,19 +845,19 @@ fn validate_flags(args: &[OsString]) -> Result<()> {
             );
             if let Some(debug) = option.strip_prefix("debuginfo=") {
                 ensure!(
-                    matches!(debug, "0" | "none"),
+                    !strip_enabled || matches!(debug, "0" | "none"),
                     "debuginfo={debug} conflicts with rrea protection"
                 );
             }
             if let Some(strip) = option.strip_prefix("strip=") {
                 ensure!(
-                    strip == "symbols",
+                    !strip_enabled || strip == "symbols",
                     "strip={strip} conflicts with rrea protection"
                 );
             }
             ensure!(
                 !option.starts_with("llvm-args"),
-                "external LLVM arguments conflict with the fixed obfuscation pipeline"
+                "external LLVM arguments conflict with the selected obfuscation policy; use --no-* switches"
             );
         }
         index += 1;
@@ -815,7 +874,7 @@ struct ArtifactReport {
     output_bytes: u64,
     output_sha256: String,
     unpacked_audit: audit::Inspection,
-    packed_audit: audit::PackedInspection,
+    packed_audit: Option<audit::PackedInspection>,
 }
 
 #[derive(Serialize)]
@@ -825,6 +884,7 @@ struct BuildReport<'a> {
     upx: &'a tools::UpxBuild,
     compiler_version: &'a str,
     obfuscation: &'a [&'a str],
+    disabled_obfuscation: &'a BTreeSet<Feature>,
     mangle_library: bool,
     symbol_mangling: Option<&'a symbols::Plan>,
     removed_metadata_symbols: &'a BTreeSet<String>,
@@ -852,7 +912,7 @@ mod tests {
             vec!["-Clto=fat"],
         ] {
             let args: Vec<_> = args.into_iter().map(OsString::from).collect();
-            assert!(validate_flags(&args).is_err());
+            assert!(validate_flags(&args, true).is_err());
         }
         let args: Vec<_> = [
             "-C",
@@ -865,6 +925,6 @@ mod tests {
         .into_iter()
         .map(OsString::from)
         .collect();
-        assert!(validate_flags(&args).is_ok());
+        assert!(validate_flags(&args, true).is_ok());
     }
 }

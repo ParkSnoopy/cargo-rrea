@@ -14,8 +14,8 @@ fn elf_bundle_renaming_preserves_loading_versions_and_exclusions() -> Result<()>
         let artifacts = fixture(root.path(), hash)?;
         let executable = root.path().join("consumer");
         let baseline = checked_output(Command::new(&executable).env("LD_BIND_NOW", "1"))?;
-        let selected = plan(&artifacts, Some(&[LOOKUP.to_owned()]))?;
-        let default = plan(&artifacts, None)?;
+        let selected = plan(&artifacts, Some(&[LOOKUP.to_owned()]), true)?;
+        let default = plan(&artifacts, None, true)?;
         ensure!(
             default.renamed.is_empty()
                 && default.removed_metadata == selected.removed_metadata
@@ -138,7 +138,7 @@ fn verify_rejected_and_relocated_plans(
     selected: &Plan,
 ) -> Result<()> {
     ensure!(
-        plan(artifacts, Some(&["unknown".to_owned()])).is_err(),
+        plan(artifacts, Some(&["unknown".to_owned()]), true).is_err(),
         "unknown keep-symbol accepted"
     );
     let library = artifacts
@@ -148,7 +148,7 @@ fn verify_rejected_and_relocated_plans(
     ambiguous.insert(PathBuf::from("duplicate.so"), library.clone());
     ensure!(
         matches!(
-            plan(&ambiguous, Some(&[]))?.retained.get(STRONG),
+            plan(&ambiguous, Some(&[]), true)?.retained.get(STRONG),
             Some(Retention::AmbiguousDefinition)
         ),
         "ambiguous provider selected"
@@ -157,7 +157,7 @@ fn verify_rejected_and_relocated_plans(
     external.remove(Path::new("libfixture.so"));
     ensure!(
         matches!(
-            plan(&external, Some(&[]))?.retained.get(STRONG),
+            plan(&external, Some(&[]), true)?.retained.get(STRONG),
             Some(Retention::External)
         ),
         "external symbol selected"
@@ -170,7 +170,7 @@ fn verify_rejected_and_relocated_plans(
         copied.insert(name.clone(), destination);
     }
     ensure!(
-        plan(&copied, Some(&[LOOKUP.to_owned()]))?.renamed == selected.renamed,
+        plan(&copied, Some(&[LOOKUP.to_owned()]), true)?.renamed == selected.renamed,
         "absolute paths changed the mapping"
     );
     let collision = copied
@@ -191,7 +191,7 @@ fn verify_rejected_and_relocated_plans(
         &mut expected,
     )?;
     let before = fs::read(collision)?;
-    let error = plan(&copied, Some(&[]))
+    let error = plan(&copied, Some(&[]), true)
         .err()
         .context("symbol collision accepted")?;
     ensure!(
@@ -221,7 +221,11 @@ fn verify_metadata_references(artifacts: &BTreeMap<PathBuf, PathBuf>) -> Result<
         &mut expected,
     )?;
     let before = fs::read(path)?;
-    let error = plan(artifacts, None)
+    ensure!(
+        plan(artifacts, None, false)?.is_empty(),
+        "disabled stripping selected metadata removal"
+    );
+    let error = plan(artifacts, None, true)
         .err()
         .context("referenced metadata was removed")?;
     ensure!(

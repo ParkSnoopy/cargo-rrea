@@ -162,7 +162,11 @@ pub enum Retention {
     BindingOrType,
 }
 
-pub fn plan(artifacts: &BTreeMap<PathBuf, PathBuf>, keep: Option<&[String]>) -> Result<Plan> {
+pub fn plan(
+    artifacts: &BTreeMap<PathBuf, PathBuf>,
+    keep: Option<&[String]>,
+    strip: bool,
+) -> Result<Plan> {
     let mut occurrences: BTreeMap<String, Vec<(String, Symbol)>> = BTreeMap::new();
     let mut referenced = BTreeSet::new();
     for (relative, path) in artifacts {
@@ -192,7 +196,11 @@ pub fn plan(artifacts: &BTreeMap<PathBuf, PathBuf>, keep: Option<&[String]>) -> 
         }
     }
     let mut result = Plan {
-        removed_metadata: metadata_removals(&occurrences, &referenced)?,
+        removed_metadata: if strip {
+            metadata_removals(&occurrences, &referenced)?
+        } else {
+            BTreeSet::new()
+        },
         ..Plan::default()
     };
     let Some(keep) = keep else {

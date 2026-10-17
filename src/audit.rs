@@ -96,8 +96,9 @@ pub fn inspect(path: &Path, clean: bool, prohibited_paths: &[&Path]) -> Result<I
         _ => bail!("only ELF64 and PE32+ executables are supported"),
     };
     if clean {
-        validate_clean(&file, &data, prohibited_paths)?;
+        validate_clean(&file)?;
     }
+    validate_paths(&data, prohibited_paths)?;
     let mut libraries = Vec::new();
     for library in file.import_libraries()? {
         libraries.push(std::str::from_utf8(library?.name())?.to_owned());
@@ -139,7 +140,7 @@ pub fn inspect(path: &Path, clean: bool, prohibited_paths: &[&Path]) -> Result<I
     })
 }
 
-fn validate_clean(file: &object::File<'_>, data: &[u8], prohibited_paths: &[&Path]) -> Result<()> {
+fn validate_clean(file: &object::File<'_>) -> Result<()> {
     for section in file.sections() {
         let name = section.name()?;
         ensure!(
@@ -151,6 +152,10 @@ fn validate_clean(file: &object::File<'_>, data: &[u8], prohibited_paths: &[&Pat
         file.symbols().next().is_none(),
         "static symbols remain after stripping"
     );
+    Ok(())
+}
+
+fn validate_paths(data: &[u8], prohibited_paths: &[&Path]) -> Result<()> {
     for path in prohibited_paths {
         let path = path.to_str().context("build paths must be UTF-8")?;
         ensure!(

@@ -130,7 +130,10 @@ Use the same acquired compiler for the baseline, `--release --config profile.rel
 Do not replace it with the active system compiler and call the result matched.
 
 Create `variants/baseline`, `variants/stripped`, and `variants/packed` as defined in the table.
-Run cargo-rrea's normal default build and copy its complete distribution to `variants/mangled` before running the opt-out build and copying that to `variants/unmangled`.
+The measured snapshot predates default-on symbol renaming.
+With the current CLI, use `--no-mangle-symbols` for the filename-mangled variant and add `--no-mangle-library` for the unmangled variant.
+Copy each complete distribution to `variants/mangled` or `variants/unmangled` respectively.
+These policy selections reproduce the intended comparison, not a claim that newer source produces the recorded hashes or timings.
 Decompress every member of the mangled snapshot to `variants/recovered` using the exact matching patched packer.
 Record `source-revision.txt`, `source-at-evaluation.patch`, `base116-revision.txt`, and `base116/Cargo.lock` beneath the evaluation root.
 The source diff and lockfile are provenance inputs, not substitutes for retaining the produced artifact hashes.

@@ -4,6 +4,7 @@ mod audit;
 mod build;
 mod dynamic;
 mod mangle;
+mod obfuscation;
 mod project;
 mod support;
 mod symbols;
@@ -32,7 +33,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    /// Build release executables and required libraries with Arkari and UPX.
+    /// Build with all obfuscation features; external Rust symbol names must be kept explicitly.
     Build(BuildOptions),
 }
 
@@ -47,14 +48,14 @@ struct BuildOptions {
     target: Option<String>,
     #[arg(short = 'j', long, value_name = "N")]
     jobs: Option<std::num::NonZeroUsize>,
-    /// Keep original library names instead of stable 16-character hashes.
-    #[arg(long = "no-mangle-library", action = clap::ArgAction::SetFalse, default_value_t = true)]
-    mangle_library: bool,
-    /// Rename eligible ELF Rust symbols; asserts all external/name-looked-up names are kept.
-    #[arg(long)]
-    mangle_symbols: bool,
+    #[command(flatten)]
+    obfuscation: obfuscation::Obfuscation,
     /// Preserve an exact Rust dynamic symbol used by external consumers or runtime lookup.
-    #[arg(long = "keep-symbol", value_name = "NAME", requires = "mangle_symbols")]
+    #[arg(
+        long = "keep-symbol",
+        value_name = "NAME",
+        conflicts_with = "no-mangle-symbols"
+    )]
     keep_symbols: Vec<String>,
     #[command(flatten)]
     selection: SelectionOptions,
