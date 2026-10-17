@@ -12,6 +12,7 @@ Section references below identify evidence in those reports.
 This comparison does not rerun their binary analysis or independently validate their tool results.
 The reports and screenshots describe the earlier header-masked build, not a new assessment of the current patched packer.
 The historical `--mangle-library` flag is no longer needed or accepted: current builds mangle names by default and accept `--no-mangle-library` to opt out.
+The separate [native evaluation](evaluation.md) tests the current implementation and records hashes, behavior, timings, and analysis failures.
 
 ## What the reports recovered
 
@@ -36,7 +37,8 @@ These are concrete fingerprint leaks despite stock UPX refusing to unpack the ex
 The [UPX overlay](../thirdparty/upx.patch) addresses known native packer identifiers, while Rust-symbol and structural-detection work remains in the [backlog](todo.md#fix-immediate-packer-and-language-fingerprints).
 
 The evaluated build used UPX with `RREA` header masking.
-The current [build pipeline](../src/build.rs) instead uses coordinated patched packer/stub tags and checks for known identifier leaks.
+The current [build pipeline](../src/build.rs) instead uses coordinated patched packer/stub tags and validates their actual header locations.
+It records marker text elsewhere as evidence, not proof of a packer fingerprint.
 Neither approach establishes encryption or a separately engineered anti-debugging system.
 The report's descriptions of a custom unpacker and a separate “segment hollowing” defense should remain attributed interpretations, not additional project guarantees.
 See [architecture and limits](architecture.md) for the implementation contract.
@@ -57,5 +59,19 @@ No matched binary hashes, analysis times, recovery-success tests, or performance
 The comparison also does not isolate stripping, packing, library mangling, and compiler obfuscation from one another.
 It cannot justify a slowdown multiplier, protection score, or claim of resistance to a determined analyst.
 A stronger evaluation would use matched builds, equally briefed analysts, identical recovery tasks, and recorded time and correctness results.
+
+## Current measured follow-up
+
+The [new evaluation](evaluation.md) exercises six variants of one pinned Base116 revision using the same acquired compiler.
+Binary/wrapper and malformed-input behavior match across all variants.
+The matching patched packer recovers the complete protected bundle byte-for-byte.
+Filename mangling changes dependency labels but not the exported-symbol multiset, which still identifies Rust and Base116 routines.
+All selected Ghidra inputs import, although bounded analysis times out on the baseline and two recovered libraries.
+Importing a loader does not establish recovery of the protected application's semantics.
+
+The full protected bundle is larger and its encoder/decoder are substantially slower in this measured workload.
+Different linkage prevents attributing the entire cost to LLVM obfuscation alone.
+These findings support reversible packing and retained implementation clues, not a protection score or prevention claim.
+Independent blinded reconstruction, broader pass coverage, native Windows execution, and structural-detector measurements remain open.
 
 See [follow-up work](todo.md) for the evaluation and protection backlog.

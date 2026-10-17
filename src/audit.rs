@@ -183,9 +183,77 @@ fn contains_text(data: &[u8], text: &str) -> bool {
         || data.windows(wide.len()).any(|window| window == wide)
 }
 
-pub fn validate_packed(path: &Path) -> Result<()> {
+#[derive(Debug, Serialize)]
+pub struct PackedInspection {
+    pub header_offset: usize,
+    pub literal_hints: Vec<LiteralHint>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LiteralHint {
+    pub marker: String,
+    pub offset: usize,
+}
+
+// RREA: coordinated packer/stub tag, not an application string.
+const PACK_TAG: [u8; 4] = 0xb6e4_a291_u32.to_le_bytes();
+
+pub fn validate_packed(path: &Path) -> Result<PackedInspection> {
     let data = fs::read(path)?;
-    for marker in [
+    let file = object::File::parse(data.as_slice())?;
+    let (range, format) = match &file {
+        // Same bounded trailer search as pinned UPX's PackUnix::canUnpack.
+        object::File::Elf64(_) => (data.len().saturating_sub(8265)..data.len(), 22),
+        object::File::Pe64(_) => {
+            let mut start = data.len();
+            for section in file.sections() {
+                ensure!(
+                    !matches!(section.name()?, "UPX0" | "UPX1" | "UPX2"),
+                    "original packer section name remains"
+                );
+                if let Some((offset, size)) = section.file_range()
+                    && size != 0
+                {
+                    start = start.min(usize::try_from(offset)?);
+                }
+            }
+            (
+                start.saturating_sub(64)..start.saturating_add(1024).min(data.len()),
+                36,
+            )
+        }
+        _ => bail!("unsupported packed format"),
+    };
+    let headers: Vec<_> = data
+        .get(range.clone())
+        .context("invalid packed header range")?
+        .windows(32)
+        .enumerate()
+        .filter(|(_, header)| valid_pack_header(header, format))
+        .map(|(offset, _)| range.start + offset)
+        .collect();
+    ensure!(
+        headers.len() == 1,
+        "missing or ambiguous patched pack header"
+    );
+    let header_offset = headers[0];
+    if format == 22 {
+        let offset = data
+            .get(header_offset + 32..header_offset + 36)
+            .context("missing packed data offset")?;
+        let offset = u32::from_le_bytes(offset.try_into()?) as usize;
+        let loader = offset
+            .checked_sub(12)
+            .and_then(|start| data.get(start..offset))
+            .context("invalid packed loader offset")?;
+        ensure!(loader[4..8] == PACK_TAG, "unexpected packed loader tag");
+        ensure!(
+            loader[10..12] == [14, format],
+            "unexpected packed loader version"
+        );
+    }
+    // A literal anywhere in payload/overlay bytes is evidence, not proof of a header.
+    let literal_hints = [
         "UPX!",
         "UPX0",
         "UPX1",
@@ -195,23 +263,37 @@ pub fn validate_packed(path: &Path) -> Result<()> {
         "RREA",
         "upX\0",
         "\0upx\0",
-    ] {
-        ensure!(
-            !contains_text(&data, marker),
-            "packer fingerprint remains in {}: {marker:?}",
-            path.display()
-        );
-    }
-    // RREA: former UPX Unix-format tag, little endian.
-    let original_tag = [0xa1, 0xd8, 0xd0, 0xd5];
-    ensure!(
-        !data
-            .windows(original_tag.len())
-            .any(|bytes| bytes == original_tag),
-        "original packer format tag remains in {}",
-        path.display()
-    );
-    Ok(())
+    ]
+    .into_iter()
+    .filter_map(|marker| {
+        data.windows(marker.len())
+            .position(|bytes| bytes == marker.as_bytes())
+            .map(|offset| {
+                LiteralHint {
+                    marker: marker.to_owned(),
+                    offset,
+                }
+            })
+    })
+    .collect();
+    Ok(PackedInspection {
+        header_offset,
+        literal_hints,
+    })
+}
+
+fn valid_pack_header(header: &[u8], format: u8) -> bool {
+    let version = if format == 22 { 14 } else { 13 };
+    header[..4] == PACK_TAG
+        && header[4..6] == [version, format]
+        && matches!(header[6], 2..=10 | 14)
+        && (1..=10).contains(&header[7])
+        && header[4..31]
+            .iter()
+            .map(|byte| u32::from(*byte))
+            .sum::<u32>()
+            % 251
+            == u32::from(header[31])
 }
 
 pub fn same_runtime_metadata(before: &Inspection, after: &Inspection) -> Result<()> {
@@ -233,3 +315,11 @@ pub fn same_runtime_metadata(before: &Inspection, after: &Inspection) -> Result<
     );
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../tests/audit/mod.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "../tests/evaluation/mod.rs"]
+mod evaluation;

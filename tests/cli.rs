@@ -552,6 +552,11 @@ fn verify_distribution(target: &Path, dist: &Path, paths: &[PathBuf]) -> Result<
             == digest(include_bytes!("../thirdparty/upx.patch").as_slice())?,
         "unexpected UPX patch provenance"
     );
+    ensure!(
+        report["upx"]["stubs_sha256"]
+            == digest(include_bytes!("../thirdparty/upx-stubs.zip").as_slice())?,
+        "unexpected UPX generated-stub provenance"
+    );
     let mut published_paths = Vec::new();
     for artifact in artifacts {
         let path = published[0]
@@ -561,12 +566,14 @@ fn verify_distribution(target: &Path, dist: &Path, paths: &[PathBuf]) -> Result<
         let packed = artifact["packed"]
             .as_bool()
             .context("missing packing status")?;
+        let header = artifact["packed_audit"]["header_offset"]
+            .as_u64()
+            .context("missing validated pack header")? as usize;
+        // RREA: coordinated format tag, checked at the reported header, not across payload data.
+        let tag = 0xb6e4_a291_u32.to_le_bytes();
         ensure!(
-            packed
-                && !data
-                    .windows(4)
-                    .any(|bytes| bytes == b"RREA" || bytes == b"UPX!"),
-            "missing packing or original signature remains: {path:?}"
+            packed && data.get(header..header + 4) == Some(tag.as_slice()),
+            "missing packing or incorrect header: {path:?}"
         );
         ensure!(
             path.parent() == Some(dist),

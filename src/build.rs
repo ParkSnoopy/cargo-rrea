@@ -303,12 +303,12 @@ fn prepare_artifacts(
         if !unpacked_audit.rust_string_hints.is_empty() {
             writeln!(
                 io::stderr().lock(),
-                "warning: {} retains Rust runtime string hints: {}",
+                "note: {} retains Rust runtime hints (not a stripping failure): {}; details in build report",
                 relative.display(),
                 unpacked_audit.rust_string_hints.join(", ")
             )?;
         }
-        {
+        let packed_audit = {
             writeln!(io::stderr().lock(), "packing {}", relative.display())?;
             let packed = clean.with_extension("rrea-packed");
             let mut pack = Command::new(&tools.upx);
@@ -340,12 +340,12 @@ fn prepare_artifacts(
                 tools::sha256(&recovered)? == unpacked_sha256,
                 "UPX recovery changed executable bytes"
             );
-            audit::validate_packed(&packed)?;
-            audit::inspect(&packed, true, prohibited)?;
+            let packed_audit = audit::validate_packed(&packed)?;
             fs::remove_file(&clean)?;
             fs::remove_file(&recovered)?;
             fs::rename(&packed, &clean)?;
-        }
+            packed_audit
+        };
         outputs.push(ArtifactReport {
             path: relative.to_path_buf(),
             packed: true,
@@ -354,6 +354,7 @@ fn prepare_artifacts(
             output_bytes: fs::metadata(&clean)?.len(),
             output_sha256: tools::sha256(&clean)?,
             unpacked_audit,
+            packed_audit,
         });
     }
     Ok(outputs)
@@ -780,6 +781,7 @@ struct ArtifactReport {
     output_bytes: u64,
     output_sha256: String,
     unpacked_audit: audit::Inspection,
+    packed_audit: audit::PackedInspection,
 }
 
 #[derive(Serialize)]

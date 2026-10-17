@@ -63,3 +63,7 @@ The matching patched packer can decompress the output; stock UPX does not suppor
 [Architecture and source development](docs/architecture.md)
 
 [Reverse-engineering comparison](docs/comparison.md)
+
+[Measured evaluation and remaining work](docs/evaluation.md)  
+[UPX overlay maintenance](docs/upx-maintenance.md)  
+[Rust fingerprint policy and symbol-renaming design](docs/rust-fingerprints.md)  

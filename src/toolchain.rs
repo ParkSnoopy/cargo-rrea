@@ -315,7 +315,7 @@ fn extract_file(
     Ok(())
 }
 
-fn extract_zip(archive: &Path, destination: &Path) -> Result<()> {
+pub fn extract_zip(archive: &Path, destination: &Path) -> Result<()> {
     let mut archive = zip::ZipArchive::new(File::open(archive)?)?;
     ensure!(archive.len() <= 100_000, "too many archive entries");
     let mut total = 0_u64;

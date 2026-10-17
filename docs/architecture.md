@@ -60,9 +60,11 @@ Both checkout and archive builds verify this digest; links, special files, missi
 Checkout builds additionally require the pinned Git revision and clean recursive submodules.
 Crate archives do not require `.git` files, but all builds require Git to apply the [UPX overlay](../thirdparty/upx.patch).
 After validating pristine sources, the build script copies them without Git metadata into `OUT_DIR` and runs `git apply --whitespace=error-all` before CMake configuration.
-Patch failure aborts before compiler acquisition, and the upstream checkout remains unchanged.
-The build script reads the watched patch and source-pin files from disk on each run, so patch-only edits do not depend on recompiling an embedded overlay.
-The native build directory is keyed by the original source path, upstream revision, and patch SHA-256.
+The patch contains source changes only, while the [generated-stub archive](../thirdparty/upx-stubs.zip) contains rebuilt headers and corresponding changed maps/dumps.
+Its [manifest](../thirdparty/upx-stubs.json) binds the archive hash to the source revision and patch hash.
+Patch failure, archive corruption, or a stale pairing aborts before compiler acquisition, and the upstream checkout remains unchanged.
+The build script reads all watched patch, pin, and stub-bundle inputs from disk on each run.
+The native build directory is keyed by the original source path, upstream revision, patch SHA-256, and generated-stub archive SHA-256.
 Normal builds never fetch moving branch updates or fall back to a released UPX binary.
 CMake and Ninja build Debug for development/test profiles and Release for release profiles, honoring Cargo's job limit.
 Native build output stays under Cargo's `OUT_DIR`, outside the submodule.
@@ -107,7 +109,11 @@ The UPX overlay removes emitted identification banners, renames PE sections, ano
 Native PE64 packing preserves the original import/export layout in the compressed source image while retaining the packed image's runtime tables.
 Offline recovery restores those source bytes instead of reconstructing the tables into a different layout.
 The pipeline no longer rewrites output headers to `RREA`.
-Packed-artifact audits reject known upstream tags, branding, and the former `RREA` label before publication.
+Packed-artifact audits require one checksum-valid patched pack header in the pinned format's search region, check ELF loader metadata, and reject original PE section labels.
+Old or corrupt headers fail even when application payloads contain valid text such as `UPX!` or `RREA`.
+Whole-file literal matches are recorded with offsets as `packed_audit.literal_hints`, not treated as proof of a packer-owned header.
+Application strings, overlays, and compressed byte sequences can legitimately contain those literals, including cargo-rrea's own diagnostics.
+Retained Rust runtime hints are reported as notes and retained in the unpacked audit, not silently removed or confused with a stripping failure.
 The matching embedded packer tests and decompresses these artifacts directly, and recovered bytes must match their pre-packing hash.
 Distributions contain only selected executables and required Rust shared libraries in `target/release/dist/`, relative to the selected manifest's directory.
 A virtual workspace manifest uses the workspace root.
@@ -119,7 +125,7 @@ Directory publication failures restore the previous directory when filesystem op
 The CLI prints executable paths on stdout and diagnostics on stderr.
 
 Reports and Cargo/compiler logs stay under Cargo's target directory as `rrea/dist-<id>/`, outside the runtime distribution.
-The report records compiler release provenance, the UPX source commit, overlay SHA-256, executable hash, packing status, artifact hashes, audit results, and known limits.
+The report records compiler release provenance, the UPX source commit, overlay and stub-archive SHA-256 values, executable hash, packing status, artifact hashes, audit results, and known limits.
 Artifact paths are absolute distribution paths.
 Log paths resolve against the report directory.
 
@@ -132,7 +138,8 @@ Log paths resolve against the report directory.
 | [src/support.rs](../src/support.rs) | Shared child-process checks and file locks |
 | [build.rs](../build.rs) | Compiler bootstrap, pinned UPX source validation, native compilation, and embedding |
 | [thirdparty/upx-source.json](../thirdparty/upx-source.json) | UPX revision and recursive source-content digest for checkout and crate builds |
-| [thirdparty/upx.patch](../thirdparty/upx.patch) | Format-patch overlay with coordinated native packer/stub changes and rebuilt headers |
+| [thirdparty/upx.patch](../thirdparty/upx.patch) | Source-only format-patch overlay with coordinated native packer/stub changes |
+| [thirdparty/upx-stubs.json](../thirdparty/upx-stubs.json) | Integrity and source/patch binding for the generated native-stub archive |
 | [src/toolchain.rs](../src/toolchain.rs) | Compiler release selection, verified acquisition, and bounded ZIP extraction shared by bootstrap and runtime |
 | [src/tools.rs](../src/tools.rs) | Runtime cache selection and embedded UPX materialization |
 | [src/dynamic.rs](../src/dynamic.rs) | Dependency selection and compiler argument adaptation |
@@ -181,8 +188,8 @@ git -C thirdparty/upx submodule update --init --recursive
 ```
 
 Review and record the changed gitlink with the consuming code, and update the source pin's revision and digest together.
-Regenerate the overlay against the new pinned revision in a disposable clone and export its commit with `git format-patch --stdout -1`.
-When changing runtime stub sources, regenerate their checked-in headers and associated tracked maps/dumps with upstream stubtools before exporting the patch.
+Regenerate the source overlay and bound stub archive against the new pinned revision in a disposable clone using the [maintenance procedure](upx-maintenance.md).
+Rebuild native headers and corresponding tracked maps/dumps with the verified upstream stubtools rather than merging generated numeric arrays.
 Overlay-only changes leave the pristine upstream revision and source digest unchanged.
 Read the new revision with `git -C thirdparty/upx rev-parse HEAD` and compute the canonical source digest from the repository root:
 
@@ -220,7 +227,10 @@ The fixture includes an allocating `no_std` dependency and its transitive `no_st
 It also checks relocated loading, failure without the packed transitive dependency, and preservation of published output after compilation failure.
 The test covers member manifests, custom Cargo target directories, stale-file removal, and single-executable selection.
 The mangled Linux case uses a tightly packed ELF layout and checks that search-path padding is removed before packing.
-It checks the absence of original packing signatures, patch provenance, and byte-identical recovery using the matching patched packer.
+It checks the coordinated packing headers, patch/stub provenance, and byte-identical recovery using the matching patched packer.
+The marker regression preserves application/overlay strings while rejecting old tags and corrupted checksums at real header locations.
+The ignored [Base116 evaluator](../tests/evaluation/mod.rs) records behavior, full artifact inventories, and round-robin timing observations for six prepared variants.
+See the [evaluation](evaluation.md) for its procedure, measurements, and evidence limits.
 
 The maximum Clippy preset applies to the CLI, Cargo build script, shared modules, and tests.
 Run the uncapped all-target gate without changing lint levels or thresholds.

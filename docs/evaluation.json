@@ -1,0 +1,538 @@
+{
+  "source_revision": "8433ccbe0e18ee82e370152215380fe6e8735d54",
+  "source_diff_sha256": "0a2c7771575cc729ac8d95c5b2cc834f82df2e49b7f1bc011729fba56feb4073",
+  "base116_revision": "595202db20655cd1a510718eed94bc0d7e46e5f8",
+  "base116_lock_sha256": "a60ce64cc9740d1c18dbbc496b26a5a3e23fb4bfd1b272f42347b513ce03f5fd",
+  "compiler": {
+    "bytes": 209930549,
+    "name": "x86_64-unknown-linux-gnu.zip",
+    "repository": "ParkSnoopy/rust_llvm-arkari_ollvm",
+    "sha256": "a908d4d0c3868c61ca728acdeb0a87f8f643ee2ae4ea1331c77d33dfcce75a7d",
+    "tag": "R1990-L2311"
+  },
+  "upx": {
+    "patch_sha256": "7c6eeb043a49ff4facb0b490803271a7171df391b0c6be4f37aa16ef2a09f5fc",
+    "repository": "upx/upx",
+    "revision": "aabe5f519002b069ee11795eb24b79cf8b0a3ce1",
+    "sha256": "6db613e0492677cbd8c894a547e4c0cf30c59c8518dbb14a2d1057e6f91bac5f",
+    "stubs_sha256": "57d033088465321b78d9de5e250ce4990fb0d80c0c35a24fdc52009008ed7c9f"
+  },
+  "binary_cases_per_variant": 52,
+  "malformed_cases_per_variant": 20,
+  "timed_input_bytes": 1048576,
+  "limitations": [
+    "RSS is a 1ms-sampled lower bound, not exact process peak.",
+    "Baseline and protected builds have different linkage; their difference does not isolate LLVM obfuscation.",
+    "No blinded analysts or decompiler success scores are measured."
+  ],
+  "raw_report_sha256": "a916ef2370cfc3484b4ca0b4fcc9489fff0be905dbfe0faaca4a249103510df1",
+  "variants": [
+    {
+      "name": "baseline",
+      "artifacts": 1,
+      "bytes": 1153088,
+      "exports": 0,
+      "rust_export_names": 0,
+      "hinted_artifacts": 1,
+      "packer_literal_hints": 0
+    },
+    {
+      "name": "mangled",
+      "artifacts": 19,
+      "bytes": 5968316,
+      "exports": 0,
+      "rust_export_names": 0,
+      "hinted_artifacts": 0,
+      "packer_literal_hints": 0
+    },
+    {
+      "name": "packed",
+      "artifacts": 1,
+      "bytes": 374072,
+      "exports": 0,
+      "rust_export_names": 0,
+      "hinted_artifacts": 0,
+      "packer_literal_hints": 0
+    },
+    {
+      "name": "recovered",
+      "artifacts": 19,
+      "bytes": 10410536,
+      "exports": 2556,
+      "rust_export_names": 2537,
+      "hinted_artifacts": 6,
+      "packer_literal_hints": 0
+    },
+    {
+      "name": "stripped",
+      "artifacts": 1,
+      "bytes": 889736,
+      "exports": 0,
+      "rust_export_names": 0,
+      "hinted_artifacts": 1,
+      "packer_literal_hints": 0
+    },
+    {
+      "name": "unmangled",
+      "artifacts": 19,
+      "bytes": 5951888,
+      "exports": 0,
+      "rust_export_names": 0,
+      "hinted_artifacts": 0,
+      "packer_literal_hints": 0
+    }
+  ],
+  "timings": [
+    {
+      "name": "baseline",
+      "samples": 9,
+      "startup_median_ms": 1.502624,
+      "encode_median_ms": 21.728704,
+      "decode_median_ms": 28.047167,
+      "encode_input_mib_per_second": 46.02207292252681,
+      "decode_output_mib_per_second": 35.65422489907804,
+      "sampled_peak_rss_kib": 2764
+    },
+    {
+      "name": "mangled",
+      "samples": 9,
+      "startup_median_ms": 44.146919,
+      "encode_median_ms": 1083.803306,
+      "decode_median_ms": 2232.476568,
+      "encode_input_mib_per_second": 0.9226766466423751,
+      "decode_output_mib_per_second": 0.4479330329078733,
+      "sampled_peak_rss_kib": 9320
+    },
+    {
+      "name": "packed",
+      "samples": 9,
+      "startup_median_ms": 6.692614000000001,
+      "encode_median_ms": 22.843752,
+      "decode_median_ms": 32.161961000000005,
+      "encode_input_mib_per_second": 43.77564596218695,
+      "decode_output_mib_per_second": 31.0926314474419,
+      "sampled_peak_rss_kib": 2764
+    },
+    {
+      "name": "recovered",
+      "samples": 9,
+      "startup_median_ms": 2.371099,
+      "encode_median_ms": 1039.93074,
+      "decode_median_ms": 2181.416624,
+      "encode_input_mib_per_second": 0.9616025005665282,
+      "decode_output_mib_per_second": 0.45841770388928693,
+      "sampled_peak_rss_kib": 9888
+    },
+    {
+      "name": "stripped",
+      "samples": 9,
+      "startup_median_ms": 1.31444,
+      "encode_median_ms": 17.831807,
+      "decode_median_ms": 28.058529,
+      "encode_input_mib_per_second": 56.0795661370718,
+      "decode_output_mib_per_second": 35.63978710359335,
+      "sampled_peak_rss_kib": 2764
+    },
+    {
+      "name": "unmangled",
+      "samples": 9,
+      "startup_median_ms": 46.056543999999995,
+      "encode_median_ms": 1059.314495,
+      "decode_median_ms": 2222.5297689999998,
+      "encode_input_mib_per_second": 0.9440067182314918,
+      "decode_output_mib_per_second": 0.44993773039536733,
+      "sampled_peak_rss_kib": 9360
+    }
+  ],
+  "artifact_hashes": {
+    "baseline": [
+      {
+        "name": "b116",
+        "bytes": 1153088,
+        "sha256": "e35f69c5198bd3de1230a548394bc294c0329238f9e9f24f013c26acdadebdf4"
+      }
+    ],
+    "mangled": [
+      {
+        "name": "b116",
+        "bytes": 452788,
+        "sha256": "9f30ce40f5e936d8f5fb3cd24a33b1ac405e462c000dbc868bdc042c1fbfe50b"
+      },
+      {
+        "name": "lib03384f9deef6be33-e12ffafd18558d16.so",
+        "bytes": 205660,
+        "sha256": "87a0215159be6ed75142933ddc4fb245917258cd5a05b13a30cb93f5acf52a1f"
+      },
+      {
+        "name": "lib04f18868c0480806-96612ff002bdaa6e.so",
+        "bytes": 744220,
+        "sha256": "64fb6791ebb973561ea0fdce28f856c22da2a938f2471120fa4b401b1c428909"
+      },
+      {
+        "name": "lib232460676d5da071-fd3b6e380a8efa50.so",
+        "bytes": 139436,
+        "sha256": "28632f26338ef76afde0adeee775dd577cc06f6a610b9d3acafda3473a90465c"
+      },
+      {
+        "name": "lib26c48fe25d959039-9d017fe1e4a756f3.so",
+        "bytes": 181628,
+        "sha256": "4c285a349b54007235cfcb19c47076c1364099f7ffd52765f88e993231ed2ceb"
+      },
+      {
+        "name": "lib49082aa7762ef272-d1ccdd4a48ab0782.so",
+        "bytes": 609012,
+        "sha256": "d6d12463423a9b23f0889cad14e2ed09f3a26da73c5afc3070273e96b81157ac"
+      },
+      {
+        "name": "lib688682f943863f9e-d634f84dabab6070.so",
+        "bytes": 111700,
+        "sha256": "a48ef32fa34845a9517fc1143b05039364eba1990ec7a9f067787a7bfdcf04de"
+      },
+      {
+        "name": "lib7ab4e72235311546-56664cad3bf4b948.so",
+        "bytes": 62316,
+        "sha256": "1acc57b5a7950f25f3bef6c9559ff09006b8d2f80d7d5d80fcac293200e7d28e"
+      },
+      {
+        "name": "lib98e5cf7bfd52c312-320e00a9e75ea771.so",
+        "bytes": 29140,
+        "sha256": "6db8637d47bfe20f526bf9a5294411563681fb2b68284b8aa25f752063051570"
+      },
+      {
+        "name": "liba4a17073cd9fb43a-498f69ebe514e4c2.so",
+        "bytes": 37340,
+        "sha256": "ce3fa53a110efd28ae59b2c876d74b516d9dbe512fb14a01bab908fb6374ebed"
+      },
+      {
+        "name": "libb085aa03c8869ddd-508b1d5520481306.so",
+        "bytes": 272268,
+        "sha256": "734cdd06dd1242946763249e54215fc4f740bef8003633831f1678e3310f7db0"
+      },
+      {
+        "name": "libcb1854893bf228b1-a838bf35713bc822.so",
+        "bytes": 21132,
+        "sha256": "b831a1bf663a8812eb0042a7eaf492a2db7ce6199ba3420f7f58f593e9d5bb2b"
+      },
+      {
+        "name": "libcb585f273ad75eb8-589c1acd343c8482.so",
+        "bytes": 41484,
+        "sha256": "f81d01d5daa75f52cc0e91668dd225032652e54ad0a6f09d378d08b497d70442"
+      },
+      {
+        "name": "libd6d5d8861ad5db0b-a9d8bced14d81456.so",
+        "bytes": 678652,
+        "sha256": "f62d3572b0dd9d6ab867be78043f70180110350a39605495405e1eb74f70983a"
+      },
+      {
+        "name": "libdbd68375941af1f1-fa4901a1a102bc82.so",
+        "bytes": 119716,
+        "sha256": "c3f315f76a44012565ff2adf4d35484104929c412fe2a828f10ba4be9bee9b0e"
+      },
+      {
+        "name": "libe3c24c6becf6882b-df5771b06790677b.so",
+        "bytes": 156780,
+        "sha256": "0d171bbc71ee93f599bed30488f16ec92b7c6983bfa9477d40182b719fe5451e"
+      },
+      {
+        "name": "libe4c63e7c05ee6c07-9d5035d14b014a17.so",
+        "bytes": 16644,
+        "sha256": "d24624ef5f140e979878cdd6db90917de0ba7459d0606374da0521f5e6e856e5"
+      },
+      {
+        "name": "libf45e5182250322e4-70fd187bd4d7998b.so",
+        "bytes": 28764,
+        "sha256": "7c37a22b1b71d40ce61ea8ec3545cef23e6422804fd6a20daa8af4ded8ed8ba6"
+      },
+      {
+        "name": "libf7a5a1a7ab3e2c1e-b4a18a78cc00a96d.so",
+        "bytes": 2059636,
+        "sha256": "c0564b69e949c41b180613576e3c777e7c81d84153eb7827490da6d4d2a76bc5"
+      }
+    ],
+    "packed": [
+      {
+        "name": "b116",
+        "bytes": 374072,
+        "sha256": "349856f9317911fa1677977a42aef9fe31f48bd5f899ada6024f6bed8b33dda3"
+      }
+    ],
+    "recovered": [
+      {
+        "name": "b116",
+        "bytes": 857112,
+        "sha256": "87bed7f925eedadfb96da199ea8adbd96e9850aebbfdd9541537e06de075fb1a"
+      },
+      {
+        "name": "lib03384f9deef6be33-e12ffafd18558d16.so",
+        "bytes": 383656,
+        "sha256": "fb3458c58deab05705e769dd9ebeb610bd384d73d65e9d31ca9ac2b8eab3d5b8"
+      },
+      {
+        "name": "lib04f18868c0480806-96612ff002bdaa6e.so",
+        "bytes": 1241848,
+        "sha256": "6ebed79191678ced4df2f88111e1c27511c61610fca045659eaac8afe4ca712c"
+      },
+      {
+        "name": "lib232460676d5da071-fd3b6e380a8efa50.so",
+        "bytes": 276248,
+        "sha256": "fccfd8121492e7b13404a45369f45a1d0bfc0745bf1fe7411fb575a32c59b7a6"
+      },
+      {
+        "name": "lib26c48fe25d959039-9d017fe1e4a756f3.so",
+        "bytes": 285896,
+        "sha256": "7933124bfbf6e6695690ff81138102325be791d5b68a809e371943ca14d93f71"
+      },
+      {
+        "name": "lib49082aa7762ef272-d1ccdd4a48ab0782.so",
+        "bytes": 946752,
+        "sha256": "1b831d96debcd25255d3494e3a3f63a9f73b90a469100584ec83aad902614d94"
+      },
+      {
+        "name": "lib688682f943863f9e-d634f84dabab6070.so",
+        "bytes": 175008,
+        "sha256": "9749a8d4b2b95762105078ee45e94333d1453c710231a31a04c5a21ce6f79e68"
+      },
+      {
+        "name": "lib7ab4e72235311546-56664cad3bf4b948.so",
+        "bytes": 100744,
+        "sha256": "22c865b765bb6163ceeff86caa86cc1c0405599391fd3862599f37ceae9d7349"
+      },
+      {
+        "name": "lib98e5cf7bfd52c312-320e00a9e75ea771.so",
+        "bytes": 43296,
+        "sha256": "fe138ba8d656057106f867cf68720ba24158b8de9fd39cde95c5930759898bcf"
+      },
+      {
+        "name": "liba4a17073cd9fb43a-498f69ebe514e4c2.so",
+        "bytes": 59304,
+        "sha256": "e3a7cd02b9879ea92b4d255a2048f2ad204d1146fe491092f65a8595e653e46d"
+      },
+      {
+        "name": "libb085aa03c8869ddd-508b1d5520481306.so",
+        "bytes": 413400,
+        "sha256": "3505aa916f3fb85d3410a823d230f990c4508ff4ebadc1a3c2f1ed744c7ef54f"
+      },
+      {
+        "name": "libcb1854893bf228b1-a838bf35713bc822.so",
+        "bytes": 27024,
+        "sha256": "03d6eae026223ea489ed4de5a4cf8eff33d50dc42b2e5369cd1bb0b990033da2"
+      },
+      {
+        "name": "libcb585f273ad75eb8-589c1acd343c8482.so",
+        "bytes": 59584,
+        "sha256": "fa0582dc6517d24c43df183d1db7a31d4b279637522e0d6975543cc749bd5366"
+      },
+      {
+        "name": "libd6d5d8861ad5db0b-a9d8bced14d81456.so",
+        "bytes": 1106504,
+        "sha256": "f4a166b1ad33ee01497b4ba3d2b715f698ca164347ab2581c9dead2fa748ac50"
+      },
+      {
+        "name": "libdbd68375941af1f1-fa4901a1a102bc82.so",
+        "bytes": 666200,
+        "sha256": "b28a28d89208758c94078de9ec12aff6aa459a48cb10ba9e74b661ebf42979ce"
+      },
+      {
+        "name": "libe3c24c6becf6882b-df5771b06790677b.so",
+        "bytes": 404408,
+        "sha256": "19ff51d3081e821e519b8a3dd3d25176e81254352172b3d5fab49da8c8c97fee"
+      },
+      {
+        "name": "libe4c63e7c05ee6c07-9d5035d14b014a17.so",
+        "bytes": 18128,
+        "sha256": "66b95c964bfab809ae61535573c2e1c8f45d56a9e74564323bd3163565468708"
+      },
+      {
+        "name": "libf45e5182250322e4-70fd187bd4d7998b.so",
+        "bytes": 42832,
+        "sha256": "e8ab26bde9695d0e84ac57ba1e91b930d4c5e56f90208425ad5a1840c99f678f"
+      },
+      {
+        "name": "libf7a5a1a7ab3e2c1e-b4a18a78cc00a96d.so",
+        "bytes": 3302592,
+        "sha256": "721884d813b0aae11ba9be85c853ced47aa81eda212c9ef0f43824697c1cde3d"
+      }
+    ],
+    "stripped": [
+      {
+        "name": "b116",
+        "bytes": 889736,
+        "sha256": "292286f55e3988bd575b939800c935e2dd758d5de1f138507b4a0aaed096b438"
+      }
+    ],
+    "unmangled": [
+      {
+        "name": "b116",
+        "bytes": 456936,
+        "sha256": "2760b5c6eb80f86aa8ae42bc11cfd1ba2577edf9dab2d44c0e2c5ecf383bf265"
+      },
+      {
+        "name": "libanstream-df5771b06790677b.so",
+        "bytes": 156796,
+        "sha256": "a220faf6cf617569bc304fb9c7cf574d303b2839d55509fed0854b30f984e3e1"
+      },
+      {
+        "name": "libanstyle-56664cad3bf4b948.so",
+        "bytes": 62332,
+        "sha256": "ea5f352d8bf9d5876bc0cc4e35e03dfed7585ecb59433bdd3ead9f0eecdd2381"
+      },
+      {
+        "name": "libanstyle_parse-498f69ebe514e4c2.so",
+        "bytes": 37340,
+        "sha256": "017d6337505537362ab7071ca0634712904592d0b30a6d886665399d827f1b09"
+      },
+      {
+        "name": "libbase116-fa4901a1a102bc82.so",
+        "bytes": 119716,
+        "sha256": "bb456df53f52985cdfb9cae91aae80e871bc37e061d55e767088e9720443d6d3"
+      },
+      {
+        "name": "libbitflags-fd3b6e380a8efa50.so",
+        "bytes": 135340,
+        "sha256": "fdc85bf5381168a2affafae2876109e0930975e166714dfc09cf6a271e06d084"
+      },
+      {
+        "name": "libclap_builder-b4a18a78cc00a96d.so",
+        "bytes": 2063668,
+        "sha256": "919aed3cdfe80293b9f7409a373d2dedf12e75c9285aa76a8c742f23eb5d2671"
+      },
+      {
+        "name": "libclap_lex-d634f84dabab6070.so",
+        "bytes": 107588,
+        "sha256": "51b70eeba4b83fb9516d55ff24133af4333a28f347a68f42872a061ca13ed9ed"
+      },
+      {
+        "name": "libclio-d1ccdd4a48ab0782.so",
+        "bytes": 604964,
+        "sha256": "ef68ad5b28b12acfb396e4e78999cde1a8baef7773a05f96b130c05be7c7ece4"
+      },
+      {
+        "name": "libcolorchoice-9d5035d14b014a17.so",
+        "bytes": 16628,
+        "sha256": "428b3646bf0f9ae8f7411d7229f6bb0c6b60e0eb0af208f72e8b56b87dc5c0b7"
+      },
+      {
+        "name": "libfastrand-70fd187bd4d7998b.so",
+        "bytes": 28764,
+        "sha256": "36a811f607905d021bf8725284da8402343e2a403d542b50fad1408ee4070e3a"
+      },
+      {
+        "name": "libgetrandom-589c1acd343c8482.so",
+        "bytes": 37388,
+        "sha256": "147a03a4c38b45e59403368e05b4bcc5a32c7261bda6f96f17203aec9f293c26"
+      },
+      {
+        "name": "libonce_cell-a838bf35713bc822.so",
+        "bytes": 21148,
+        "sha256": "cf95a548dda0e13f89c94866c34363cd553023556ab34a74c455e601cf8b2a83"
+      },
+      {
+        "name": "librustix-a9d8bced14d81456.so",
+        "bytes": 678620,
+        "sha256": "4d9ccc0802162226549c8770eabd75c6f0720964818cb1b2afe6078f11c6e7bd"
+      },
+      {
+        "name": "libsame_file-320e00a9e75ea771.so",
+        "bytes": 29124,
+        "sha256": "a3137e6c99c5d94a013c76c3ad391569c8967c5e2a650f6f7e0c15e09f9dc0c6"
+      },
+      {
+        "name": "libstd-96612ff002bdaa6e.so",
+        "bytes": 744220,
+        "sha256": "75f2527f0b508d3f1ad6cfe1bf3dcf316a9f288fabfe001d77c7d6cb6518cd74"
+      },
+      {
+        "name": "libstrsim-e12ffafd18558d16.so",
+        "bytes": 201532,
+        "sha256": "4c6dbe5492d68f68498424c61db185e91ca7295dd3ff0da7cce1704920feacd9"
+      },
+      {
+        "name": "libtempfile-508b1d5520481306.so",
+        "bytes": 268156,
+        "sha256": "22fe03e47fd212e9669356967e17bfb3da97cd8772920f4ce4b064da7bc37bc6"
+      },
+      {
+        "name": "libwalkdir-9d017fe1e4a756f3.so",
+        "bytes": 181628,
+        "sha256": "a6b6a2f84d1999a1da265d920f251120cb521acbc032b889c33dc693772b0906"
+      }
+    ]
+  },
+  "ghidra": [
+    {
+      "variant": "baseline",
+      "imports": 1,
+      "analysis_success": 0,
+      "timeout_files": [
+        "b116"
+      ],
+      "error_count": 12393,
+      "warning_count": 156
+    },
+    {
+      "variant": "packed",
+      "imports": 1,
+      "analysis_success": 1,
+      "timeout_files": [],
+      "error_count": 0,
+      "warning_count": 4
+    },
+    {
+      "variant": "mangled",
+      "imports": 19,
+      "analysis_success": 19,
+      "timeout_files": [],
+      "error_count": 0,
+      "warning_count": 746
+    },
+    {
+      "variant": "recovered",
+      "imports": 19,
+      "analysis_success": 17,
+      "timeout_files": [
+        "libf7a5a1a7ab3e2c1e-b4a18a78cc00a96d.so",
+        "lib04f18868c0480806-96612ff002bdaa6e.so"
+      ],
+      "error_count": 31238,
+      "warning_count": 1976
+    }
+  ],
+  "runtime_memfd_mappings": [
+    {
+      "variant": "baseline",
+      "count": 0,
+      "names": []
+    },
+    {
+      "variant": "mangled",
+      "count": 19,
+      "names": [
+        " (deleted)"
+      ]
+    },
+    {
+      "variant": "packed",
+      "count": 1,
+      "names": [
+        " (deleted)"
+      ]
+    },
+    {
+      "variant": "recovered",
+      "count": 0,
+      "names": []
+    },
+    {
+      "variant": "stripped",
+      "count": 0,
+      "names": []
+    },
+    {
+      "variant": "unmangled",
+      "count": 19,
+      "names": [
+        " (deleted)"
+      ]
+    }
+  ]
+}

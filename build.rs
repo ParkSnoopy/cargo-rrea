@@ -123,7 +123,61 @@ fn git(source: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?.trim().to_owned())
 }
 
-fn patched_source(source: &Path, directory: &Path, overlay: &[u8]) -> Result<PathBuf> {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpxStubs {
+    revision: String,
+    patch_sha256: String,
+    sha256: String,
+}
+
+fn stub_archive(
+    source: &Path,
+    revision: &str,
+    patch: &str,
+    output: &mut impl Write,
+) -> Result<(PathBuf, String)> {
+    let manifest = source.with_file_name("upx-stubs.json");
+    let archive = source.with_file_name("upx-stubs.zip");
+    for path in [&manifest, &archive] {
+        writeln!(output, "cargo:rerun-if-changed={}", path.display())?;
+    }
+    let stubs: UpxStubs = serde_json::from_slice(&fs::read(manifest)?)?;
+    ensure!(
+        stubs.revision == revision && stubs.patch_sha256 == patch,
+        "UPX stubs do not match the source revision and overlay; regenerate the stub bundle"
+    );
+    ensure!(
+        toolchain::sha256(&archive)? == stubs.sha256,
+        "UPX stub archive checksum mismatch"
+    );
+    Ok((archive, stubs.sha256))
+}
+
+fn apply_stubs(archive: &Path, source: &Path) -> Result<()> {
+    let extracted = tempfile::tempdir()?;
+    toolchain::extract_zip(archive, extracted.path())?;
+    let mut files = Vec::new();
+    source_files(extracted.path(), extracted.path(), &mut files)?;
+    for relative in files {
+        let path = Path::new(&relative);
+        ensure!(
+            path.starts_with("src/stub")
+                && !path.starts_with("src/stub/src")
+                && source.join(path).is_file(),
+            "stub bundle must only replace existing generated stub files: {relative}"
+        );
+        fs::copy(extracted.path().join(path), source.join(path))?;
+    }
+    Ok(())
+}
+
+fn patched_source(
+    source: &Path,
+    directory: &Path,
+    overlay: &[u8],
+    stubs: &Path,
+) -> Result<PathBuf> {
     fs::create_dir_all(directory)?;
     let staged = tempfile::Builder::new()
         .prefix(".source-")
@@ -150,6 +204,7 @@ fn patched_source(source: &Path, directory: &Path, overlay: &[u8]) -> Result<Pat
     .context(
         "cannot apply thirdparty/upx.patch; Git and matching pinned UPX sources are required",
     )?;
+    apply_stubs(stubs, staged.path())?;
     let destination = directory.join("source");
     if destination.exists() {
         fs::remove_dir_all(&destination)?;
@@ -224,15 +279,16 @@ fn main() -> Result<()> {
     // Cargo can reuse OUT_DIR when switching between a checkout and its extracted crate.
     let overlay = fs::read(source.with_file_name("upx.patch"))?;
     let patch_sha256 = toolchain::digest(overlay.as_slice())?;
+    let (stubs, stubs_sha256) = stub_archive(&source, &revision, &patch_sha256, &mut output)?;
     let source_key = toolchain::digest(
         format!(
-            "{}\n{revision}\n{patch_sha256}",
+            "{}\n{revision}\n{patch_sha256}\n{stubs_sha256}",
             source.to_str().context("UPX source path must be UTF-8")?
         )
         .as_bytes(),
     )?;
     let build = out_dir.join("upx").join(source_key);
-    let source = patched_source(&source, &build, &overlay)?;
+    let source = patched_source(&source, &build, &overlay, &stubs)?;
     let build = build.join("build");
     let configuration = if env::var("PROFILE")? == "release" {
         "Release"
@@ -281,6 +337,10 @@ fn main() -> Result<()> {
     writeln!(
         output,
         "cargo:rustc-env=RREA_UPX_PATCH_SHA256={patch_sha256}"
+    )?;
+    writeln!(
+        output,
+        "cargo:rustc-env=RREA_UPX_STUBS_SHA256={stubs_sha256}"
     )?;
     Ok(())
 }
