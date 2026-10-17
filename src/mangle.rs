@@ -43,15 +43,22 @@ pub fn name(original: &str, identity: &str) -> Result<String> {
 pub fn rewrite(
     path: &Path,
     names: &BTreeMap<String, String>,
+    symbols: &crate::symbols::Plan,
     expected: &mut audit::Inspection,
 ) -> Result<()> {
-    if names.is_empty() {
+    if names.is_empty() && symbols.is_empty() {
         return Ok(());
     }
     let data = fs::read(path)?;
     let output = match object::File::parse(data.as_slice())? {
-        object::File::Elf64(_) => rewrite_elf(&data, names)?,
-        object::File::Pe64(pe) => rewrite_pe(&data, &pe, names)?,
+        object::File::Elf64(_) => rewrite_elf(&data, names, symbols)?,
+        object::File::Pe64(pe) => {
+            ensure!(
+                symbols.is_empty(),
+                "symbol mangling requires ELF64 artifacts"
+            );
+            rewrite_pe(&data, &pe, names)?
+        }
         _ => anyhow::bail!("unsupported library mangling format"),
     };
     fs::write(path, output)?;
@@ -65,13 +72,47 @@ pub fn rewrite(
             library.clone_from(name);
         }
     }
+    for symbol in expected
+        .imports
+        .iter_mut()
+        .map(|(_, name)| name)
+        .chain(&mut expected.exports)
+    {
+        if let audit::SymbolName::Name(name) = symbol
+            && let Some(replacement) = symbols.renamed.get(name)
+        {
+            name.clone_from(replacement);
+        }
+    }
+    expected.exports.retain(|symbol| {
+        !matches!(symbol,
+        audit::SymbolName::Name(name) if symbols.removed_metadata.contains(name))
+    });
+    if let Some(metadata) = &mut expected.elf {
+        metadata
+            .symbols
+            .retain(|symbol| !symbols.removed_metadata.contains(&symbol.reference.name));
+        metadata.rename(names, &symbols.renamed);
+    }
     expected.libraries.sort();
     expected.imports.sort();
+    expected.exports.sort();
     Ok(())
 }
 
-fn rewrite_elf(data: &[u8], names: &BTreeMap<String, String>) -> Result<Vec<u8>> {
+fn rewrite_elf(
+    data: &[u8],
+    names: &BTreeMap<String, String>,
+    symbols: &crate::symbols::Plan,
+) -> Result<Vec<u8>> {
     let mut builder = Builder::read(data)?;
+    for symbol in &mut builder.dynamic_symbols {
+        let original = std::str::from_utf8(symbol.name.as_slice())?;
+        symbol.delete = symbols.removed_metadata.contains(original);
+        if let Some(name) = symbols.renamed.get(original) {
+            symbol.name = name.as_bytes().to_vec().into();
+        }
+    }
     for entry in builder
         .dynamic_data_mut()
         .context("missing ELF dynamic table")?

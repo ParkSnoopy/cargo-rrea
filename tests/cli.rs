@@ -1,6 +1,7 @@
 //! Integration boundaries for temporary build profiles and the native pipeline.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     fs,
     io::{self, Write},
@@ -98,6 +99,7 @@ fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<
         vec!["build", "--release", "--exclude", "fixture-app"],
         vec!["build", "--release", "--mangle-library"],
         vec!["build", "--no-mangle-library"],
+        vec!["build", "--release", "--keep-symbol", "missing"],
     ] {
         let output = cli().args(&args).output()?;
         ensure!(
@@ -125,6 +127,8 @@ fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<
         "--target",
         "--jobs",
         "--no-mangle-library",
+        "--mangle-symbols",
+        "--keep-symbol",
     ] {
         ensure!(help.contains(flag), "build help omits {flag}: {help}");
     }
@@ -285,6 +289,19 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "runs packed Rust symbol renaming with both library naming policies"]
+fn real_symbol_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> Result<()> {
+    for selection in [
+        &["--mangle-symbols"][..],
+        &["--mangle-symbols", "--no-mangle-library"],
+    ] {
+        verify_native_pipeline(selection)?;
+    }
+    Ok(())
+}
+
 fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
     let root = fixture()?;
     let manifest = fs::read(root.path().join("Cargo.toml"))?;
@@ -343,11 +360,32 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
     );
     verify_behavior(&baseline, &paths)?;
     let distribution = verify_distribution(&target, &dist, &paths)?;
+    verify_symbol_report(
+        &distribution.report,
+        selection.contains(&"--mangle-symbols"),
+    )?;
     ensure!(
         distribution.report["mangle_library"] == !selection.contains(&"--no-mangle-library"),
         "incorrect mangling report"
     );
     verify_relocation(root.path(), &distribution, &paths)?;
+    verify_obfuscation(&distribution)?;
+    verify_republication(
+        &manifest_directory,
+        &target,
+        &baseline,
+        &paths,
+        &distribution,
+    )?;
+    ensure!(
+        fs::read(root.path().join("Cargo.toml"))? == manifest
+            && fs::read(root.path().join("app/Cargo.toml"))? == member,
+        "successful or failed build changed a project manifest"
+    );
+    Ok(())
+}
+
+fn verify_obfuscation(distribution: &Distribution) -> Result<()> {
     let report = &distribution.report;
     ensure!(
         report["obfuscation"]
@@ -374,18 +412,6 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
         !log.contains("--crate-name\",\"build_script_build"),
         "build script received target passes"
     );
-    verify_republication(
-        &manifest_directory,
-        &target,
-        &baseline,
-        &paths,
-        &distribution,
-    )?;
-    ensure!(
-        fs::read(root.path().join("Cargo.toml"))? == manifest
-            && fs::read(root.path().join("app/Cargo.toml"))? == member,
-        "successful or failed build changed a project manifest"
-    );
     Ok(())
 }
 
@@ -400,6 +426,7 @@ fn verify_republication(
     let mangle = distribution.report["mangle_library"]
         .as_bool()
         .context("missing mangling status")?;
+    let symbols = !distribution.report["symbol_mangling"].is_null();
     fs::write(dist.join("stale.pdb"), b"not a runtime artifact")?;
     let repeated = success(
         cargo_cli()?
@@ -413,7 +440,8 @@ fn verify_republication(
                 "fixture-app",
                 "--bins",
             ])
-            .args((!mangle).then_some("--no-mangle-library")),
+            .args((!mangle).then_some("--no-mangle-library"))
+            .args(symbols.then_some("--mangle-symbols")),
     )?;
     ensure!(
         String::from_utf8(repeated.stdout)?
@@ -447,7 +475,8 @@ fn verify_republication(
                 "--bin",
                 "secondary",
             ])
-            .args((!mangle).then_some("--no-mangle-library")),
+            .args((!mangle).then_some("--no-mangle-library"))
+            .args(symbols.then_some("--mangle-symbols")),
     )?;
     ensure!(
         fs::read_dir(&dist)?.count() == 4
@@ -602,6 +631,77 @@ fn verify_distribution(target: &Path, dist: &Path, paths: &[PathBuf]) -> Result<
     })
 }
 
+fn original_exports(artifact: &serde_json::Value, report: &serde_json::Value) -> Result<String> {
+    let mut reverse = BTreeMap::new();
+    if let Some(names) = report["symbol_mangling"]["renamed"].as_object() {
+        for (original, name) in names {
+            reverse.insert(
+                name.as_str().context("invalid symbol map")?,
+                original.as_str(),
+            );
+        }
+    }
+    Ok(artifact["unpacked_audit"]["exports"]
+        .as_array()
+        .context("missing exports")?
+        .iter()
+        .filter_map(|entry| entry["Name"].as_str())
+        .map(|name| reverse.get(name).copied().unwrap_or(name))
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+fn verify_symbol_report(report: &serde_json::Value, enabled: bool) -> Result<()> {
+    ensure!(
+        report["symbol_mangling"].is_null() != enabled,
+        "incorrect symbol policy report"
+    );
+    if !enabled {
+        return Ok(());
+    }
+    let plan = &report["symbol_mangling"];
+    let renamed = plan["renamed"].as_object().context("missing symbol map")?;
+    ensure!(
+        !renamed.is_empty() && renamed.keys().any(|name| name.starts_with("_R")),
+        "no Rust v0 symbols renamed"
+    );
+    let mut names = BTreeSet::new();
+    for artifact in report["artifacts"]
+        .as_array()
+        .context("missing artifacts")?
+    {
+        for symbol in artifact["unpacked_audit"]["elf"]["symbols"]
+            .as_array()
+            .context("missing ELF symbols")?
+        {
+            names.insert(symbol["name"].as_str().context("missing symbol name")?);
+        }
+    }
+    for (old, new) in renamed {
+        ensure!(
+            !names.contains(old.as_str())
+                && names.contains(new.as_str().context("invalid symbol name")?),
+            "incomplete bundle symbol rewrite: {old}"
+        );
+    }
+    for name in plan["retained"]
+        .as_object()
+        .context("missing exclusions")?
+        .keys()
+    {
+        ensure!(
+            names.contains(name.as_str()),
+            "excluded symbol disappeared: {name}"
+        );
+    }
+    writeln!(
+        io::stderr().lock(),
+        "renamed {} Rust symbols across the fixture bundle",
+        renamed.len()
+    )?;
+    Ok(())
+}
+
 fn verify_library_name(
     path: &Path,
     artifact: &serde_json::Value,
@@ -613,7 +713,7 @@ fn verify_library_name(
     ) {
         return Ok(());
     }
-    let exports = artifact["unpacked_audit"]["exports"].to_string();
+    let exports = original_exports(artifact, report)?;
     let (original, identity) = if exports.contains("fixture_shared") {
         (
             "fixture_shared",
@@ -727,15 +827,15 @@ fn verify_relocation(root: &Path, distribution: &Distribution, paths: &[PathBuf]
             expected.stdout
         );
     }
-    let index = distribution.report["artifacts"]
+    let exports: Vec<_> = distribution.report["artifacts"]
         .as_array()
         .context("missing artifact report")?
         .iter()
-        .position(|artifact| {
-            artifact["unpacked_audit"]["exports"]
-                .to_string()
-                .contains("fixture_shared")
-        })
+        .map(|artifact| original_exports(artifact, &distribution.report))
+        .collect::<Result<_>>()?;
+    let index = exports
+        .iter()
+        .position(|names| names.contains("fixture_shared"))
         .context("missing transitive runtime library")?;
     let dependency = distribution
         .artifacts
@@ -788,6 +888,30 @@ fn verify_failed_publication(
         String::from_utf8_lossy(&failed.stderr).contains("conflicts with rrea protection"),
         "missing protection conflict diagnostic"
     );
+    if !distribution.report["symbol_mangling"].is_null() {
+        let failed = cli()
+            .current_dir(root)
+            .env("CARGO_TARGET_DIR", target)
+            .args([
+                "build",
+                "--release",
+                "--offline",
+                "--package",
+                "fixture-app",
+                "--bins",
+                "--mangle-symbols",
+                "--keep-symbol",
+                "missing-symbol",
+            ])
+            .args((distribution.report["mangle_library"] == false).then_some("--no-mangle-library"))
+            .output()?;
+        ensure!(
+            !failed.status.success()
+                && String::from_utf8_lossy(&failed.stderr).contains("unknown Rust keep-symbol"),
+            "unknown keep-symbol did not fail after linking: {}",
+            String::from_utf8_lossy(&failed.stderr)
+        );
+    }
     ensure!(
         distributions(target)? == prior_reports,
         "failed build changed published distributions"

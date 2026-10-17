@@ -4,11 +4,14 @@ use anyhow::{Context, Result, bail, ensure};
 use object::{Object, ObjectSection};
 use serde::Serialize;
 
+use crate::symbols;
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct Inspection {
     pub libraries: Vec<String>,
     pub imports: Vec<(String, SymbolName)>,
     pub exports: Vec<SymbolName>,
+    pub elf: Option<symbols::Metadata>,
     pub hardening: Hardening,
     pub rust_string_hints: Vec<String>,
 }
@@ -130,6 +133,7 @@ pub fn inspect(path: &Path, clean: bool, prohibited_paths: &[&Path]) -> Result<I
         libraries,
         imports,
         exports,
+        elf: symbols::inspect(&file)?,
         hardening,
         rust_string_hints,
     })
@@ -312,6 +316,10 @@ pub fn same_runtime_metadata(before: &Inspection, after: &Inspection) -> Result<
     ensure!(
         before.hardening == after.hardening,
         "executable hardening headers changed"
+    );
+    ensure!(
+        before.elf == after.elf,
+        "ELF dynamic symbol attributes or relocation targets changed"
     );
     Ok(())
 }

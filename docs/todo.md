@@ -61,19 +61,28 @@ Neither filename mangling nor static-symbol stripping addresses all of these lea
   Adapt metadata audits to validate the declared rename map rather than weakening import/export checks.
   The [design](rust-fingerprints.md#closed-bundle-symbol-map) includes ELF/PE obligations, atomic publication, exclusions, and acceptance gates.
 - [ ] Implement and verify the closed-bundle symbol map on both native platforms.
+  - [x] Implement opt-in ELF renaming with exact-name exclusions and collision rejection.
+    Packed Rust fixtures rename 1,820 symbols with each library filename policy while preserving loading, allocation, panic/unwind, relocation, and failed publication.
+    GNU/SysV hash, versioned, weak, TLS/IFUNC, ambiguous-provider, and `dlsym` boundaries have dedicated loader coverage.
+  - [ ] Implement PE symbol renaming and establish native Windows acceptance.
 - [ ] Remove avoidable source paths and implementation strings at compilation or generation time, investigating pass coverage where strings remain.
   Do not blindly overwrite loaded data, public CLI text, or required diagnostics.
   Local absolute paths and removable metadata are already rejected.
   Remapped dependency paths, core/alloc diagnostics, and precompiled standard-library strings remain visible.
+  Unreferenced ELF `rust_metadata_*` exports are now removed together with their non-loaded `.rustc` payload instead of leaving dangling section references.
 
 ### Acceptance gates
 
 - [ ] Extend artifact audits to detect the observed UPX/RREA and Rust symbol fingerprints before publication, rejecting avoidable leaks rather than only warning.
   Record any necessary retained identifiers explicitly instead of reporting a fingerprint-free result.
+  - [x] Validate ELF symbol attributes, versions, and relocation targets against the declared rename/removal plan.
+    Selected old names and removed compiler exports cannot survive the exact metadata comparison.
+    Reports record symbol exclusions and metadata removals; unexpected or referenced compiler metadata fails before publication.
+  PE symbol policy and structural-detector coverage remain open.
 - [x] Reject old native pack-header tags and PE section labels before publication and verify direct recovery with the patched packer.
   Regress marker literals in legitimate payloads, corrupted headers, loader tags, and PE recovery.
   cargo-rrea now packs itself and builds a working fixture from its packed distribution.
-  Rust-symbol policy and structural-detector coverage remain open.
+  PE symbol policy and structural-detector coverage remain open.
 - [x] Repeat known-string scans, symbol inspection, pack-format recognition checks, and Ghidra import using recorded tool versions on final executables, libraries, and recovered payloads.
   Include the matching bundled UPX version rather than relying only on the older tool shown in the screenshot.
   Ghidra imported all 40 selected inputs, but the baseline and two recovered libraries reached the analysis timeout.

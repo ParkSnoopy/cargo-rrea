@@ -104,6 +104,16 @@ The reserve scales with the dependency graph and includes alignment slack.
 Sanitization reduces that padded path back to `$ORIGIN` before rebuilding loader metadata, without changing unrelated search paths.
 This keeps code, data, and unwind addresses unchanged while leaving loader metadata below the UPX stub, including for tightly packed ELF layouts.
 
+`--mangle-symbols` independently enables closed-bundle ELF Rust symbol renaming.
+It asserts that all externally consumed or runtime-looked-up Rust names are listed with `--keep-symbol NAME`.
+The default leaves runtime symbol names unchanged, and Windows rejects the opt-in before building.
+The [symbol policy](rust-fingerprints.md) defines eligibility, explicit exclusions, deterministic names, and remaining platform obligations.
+The complete reachable bundle is inspected before any transformation is selected.
+One shared map updates definitions and consumers through the existing ELF builder, including GNU/SysV hashes, GNU version arrays, and symbol-index relocations.
+The runtime audit checks addresses, sizes, section ownership, binding/type/visibility, versions, and relocation identities against the expected map.
+Unreferenced, non-loaded `rust_metadata_*` exports in `.rustc` are removed before stripping in either symbol policy, preventing dangling section references.
+Unexpected exported metadata or a bundled reference to compiler metadata fails before publication.
+
 Publication follows stripping, metadata audits, UPX integrity checks, and decompression audits in a staging directory.
 The UPX overlay removes emitted identification banners, renames PE sections, anonymizes Linux memfd names, and coordinates non-text format tags in the packer and rebuilt x86_64 runtime stubs.
 Native PE64 packing preserves the original import/export layout in the compressed source image while retaining the packed image's runtime tables.
@@ -126,6 +136,8 @@ The CLI prints executable paths on stdout and diagnostics on stderr.
 
 Reports and Cargo/compiler logs stay under Cargo's target directory as `rrea/dist-<id>/`, outside the runtime distribution.
 The report records compiler release provenance, the UPX source commit, overlay and stub-archive SHA-256 values, executable hash, packing status, artifact hashes, audit results, and known limits.
+`symbol_mangling` is null when renaming is disabled and otherwise records the exact map and retention reasons.
+`removed_metadata_symbols` records compiler-only export removals independently of renaming.
 Artifact paths are absolute distribution paths.
 Log paths resolve against the report directory.
 
@@ -145,6 +157,9 @@ Log paths resolve against the report directory.
 | [src/dynamic.rs](../src/dynamic.rs) | Dependency selection and compiler argument adaptation |
 | [src/build.rs](../src/build.rs) | Obfuscation, artifact collection, stripping, packing, audits, and publication |
 | [src/audit.rs](../src/audit.rs) | ELF/PE metadata, imports, exports, hardening headers, and residual Rust string hints |
+| [src/symbols.rs](../src/symbols.rs) | ELF symbol/relocation inspection, closed-bundle eligibility, and compiler-metadata removal planning |
+| [src/mangle.rs](../src/mangle.rs) | Library identity rewriting and declared ELF symbol transformations |
+| [tests/symbols/mod.rs](../tests/symbols/mod.rs) | Native ELF loader, hash/version, exclusion, collision, and metadata-reference boundaries |
 | [tests/cli.rs](../tests/cli.rs) | Bootstrap, temporary profiles, manifest preservation, runtime parity, relocation, and required packed dependencies |
 
 ## Compatibility and limits
@@ -210,6 +225,7 @@ Run from the repository root:
 cargo fmt --check
 cargo test
 cargo test --test cli real_native_pipeline -- --ignored --nocapture
+cargo test --test cli real_symbol_pipeline -- --ignored --nocapture
 cargo build --release
 cargo run -- --help
 cargo clippy --all-targets
@@ -229,6 +245,8 @@ The test covers member manifests, custom Cargo target directories, stale-file re
 The mangled Linux case uses a tightly packed ELF layout and checks that search-path padding is removed before packing.
 It checks the coordinated packing headers, patch/stub provenance, and byte-identical recovery using the matching patched packer.
 The marker regression preserves application/overlay strings while rejecting old tags and corrupted checksums at real header locations.
+The ELF symbol fixture uses the native C compiler and linker to exercise GNU-only, SysV-only, and combined hash tables, versioned exports, TLS, IFUNCs, weak symbols, and a retained `dlsym` name.
+The symbol-enabled native Rust test reuses the full pipeline fixture with both filename policies and rejects unknown keep-symbol names without replacing the previous distribution.
 The ignored [Base116 evaluator](../tests/evaluation/mod.rs) records behavior, full artifact inventories, and round-robin timing observations for six prepared variants.
 See the [evaluation](evaluation.md) for its procedure, measurements, and evidence limits.
 

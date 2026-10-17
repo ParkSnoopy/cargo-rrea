@@ -32,6 +32,8 @@ cargo rrea build --release
 `build` temporarily disables debug information and strips symbols without editing `Cargo.toml`.  
 `build` requires `--release` (or `-r`); development profiles are not supported.
 Library names are mangled by default; pass `--no-mangle-library` to keep their original names.
+ELF Rust symbol renaming is separately opt-in with `--mangle-symbols`, under the [closed-bundle contract](docs/rust-fingerprints.md#closed-bundle-symbol-map).  
+Preserve externally consumed or runtime-looked-up Rust names with `--keep-symbol NAME`; Windows symbol renaming is not supported.  
 
 Select a package and executable, or build with an already cached toolchain offline:
 
@@ -66,4 +68,4 @@ The matching patched packer can decompress the output; stock UPX does not suppor
 
 [Measured evaluation and remaining work](docs/evaluation.md)  
 [UPX overlay maintenance](docs/upx-maintenance.md)  
-[Rust fingerprint policy and symbol-renaming design](docs/rust-fingerprints.md)  
+[Rust fingerprint policy and symbol renaming](docs/rust-fingerprints.md)  

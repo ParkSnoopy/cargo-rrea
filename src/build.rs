@@ -13,7 +13,7 @@ use fs2::FileExt;
 use object::{Object, ObjectSection};
 use serde::Serialize;
 
-use crate::{BuildOptions, audit, dynamic, mangle, project, tools};
+use crate::{BuildOptions, audit, dynamic, mangle, project, symbols, tools};
 
 const OBFUSCATION: &[&str] = &[
     "-Cllvm-args=--irobf",
@@ -27,15 +27,7 @@ const OBFUSCATION: &[&str] = &[
 ];
 
 pub fn run(options: &BuildOptions) -> Result<()> {
-    let target = tools::host()?;
-    ensure!(
-        options
-            .target
-            .as_deref()
-            .is_none_or(|requested| requested == target),
-        "cross-compilation is not supported; target must be {target}"
-    );
-
+    let target = check_target(options)?;
     let metadata = metadata(options)?;
     let manifest_directory = match metadata.root_package() {
         Some(package) => {
@@ -90,7 +82,20 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         .iter()
         .map(PathBuf::as_path)
         .collect();
-    let mut outputs = prepare_artifacts(artifacts, staging.path(), &tools, &names, &prohibited)?;
+    let symbol_plan = symbols::plan(
+        &artifacts,
+        options
+            .mangle_symbols
+            .then_some(options.keep_symbols.as_slice()),
+    )?;
+    let mut outputs = prepare_artifacts(
+        artifacts,
+        staging.path(),
+        &tools,
+        &names,
+        &symbol_plan,
+        &prohibited,
+    )?;
     for output in &mut outputs {
         output.path = distribution.join(&output.path);
     }
@@ -101,6 +106,8 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         compiler_version: &compiler_version,
         obfuscation: OBFUSCATION,
         mangle_library: options.mangle_library,
+        symbol_mangling: options.mangle_symbols.then_some(&symbol_plan),
+        removed_metadata_symbols: &symbol_plan.removed_metadata,
         cargo_log: Path::new("cargo.jsonl"),
         compiler_invocations: Path::new("rustc-invocations.jsonl"),
         artifacts: &outputs,
@@ -117,6 +124,14 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         &distribution,
         &report,
     )?;
+    print_distribution(&distribution, &executables, &destination)
+}
+
+fn print_distribution(
+    distribution: &Path,
+    executables: &[PathBuf],
+    destination: &Path,
+) -> Result<()> {
     let mut stdout = io::stdout().lock();
     for executable in executables {
         writeln!(stdout, "{}", distribution.join(executable).display())?;
@@ -127,6 +142,22 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         destination.join("build.json").display()
     )?;
     Ok(())
+}
+
+fn check_target(options: &BuildOptions) -> Result<&'static str> {
+    let target = tools::host()?;
+    ensure!(
+        options
+            .target
+            .as_deref()
+            .is_none_or(|requested| requested == target),
+        "cross-compilation is not supported; target must be {target}"
+    );
+    ensure!(
+        !options.mangle_symbols || target == "x86_64-unknown-linux-gnu",
+        "symbol mangling is supported only for Linux ELF64 closed bundles"
+    );
+    Ok(target)
 }
 
 fn check_tools(tools: &tools::Tools, target: &str) -> Result<String> {
@@ -289,15 +320,17 @@ fn prepare_artifacts(
     staging: &Path,
     tools: &tools::Tools,
     names: &BTreeMap<String, String>,
+    symbols: &symbols::Plan,
     prohibited: &[&Path],
 ) -> Result<Vec<ArtifactReport>> {
     let mut outputs = Vec::new();
+
     for (relative, original) in artifacts {
         let name = relative.to_str().context("artifact name is not UTF-8")?;
         let relative = Path::new(names.get(name).map_or(name, String::as_str));
         writeln!(io::stderr().lock(), "sanitizing {}", relative.display())?;
         let clean = staging.join(relative);
-        let unpacked_audit = sanitize(&original, &clean, tools, names, prohibited)?;
+        let unpacked_audit = sanitize(&original, &clean, tools, names, symbols, prohibited)?;
         let unpacked_sha256 = tools::sha256(&clean)?;
         let unpacked_bytes = fs::metadata(&clean)?.len();
         if !unpacked_audit.rust_string_hints.is_empty() {
@@ -365,16 +398,17 @@ fn sanitize(
     clean: &Path,
     tools: &tools::Tools,
     names: &BTreeMap<String, String>,
+    symbols: &symbols::Plan,
     prohibited: &[&Path],
 ) -> Result<audit::Inspection> {
     let mut original_audit = audit::inspect(original, false, &[])?;
     fs::create_dir_all(clean.parent().context("artifact has no parent")?)?;
     let mangled = clean.with_extension("rrea-mangled");
-    let source = if names.is_empty() {
+    let source = if names.is_empty() && symbols.is_empty() {
         original
     } else {
         fs::copy(original, &mangled)?;
-        mangle::rewrite(&mangled, names, &mut original_audit)?;
+        mangle::rewrite(&mangled, names, symbols, &mut original_audit)?;
         mangled.as_path()
     };
     let data = fs::read(source)?;
@@ -390,7 +424,7 @@ fn sanitize(
     project::checked_output(strip.arg(source).arg(clean))?;
     let unpacked_audit = audit::inspect(clean, true, prohibited)?;
     audit::same_runtime_metadata(&original_audit, &unpacked_audit)?;
-    if !names.is_empty() {
+    if !names.is_empty() || !symbols.is_empty() {
         fs::remove_file(mangled)?;
     }
     Ok(unpacked_audit)
@@ -792,6 +826,8 @@ struct BuildReport<'a> {
     compiler_version: &'a str,
     obfuscation: &'a [&'a str],
     mangle_library: bool,
+    symbol_mangling: Option<&'a symbols::Plan>,
+    removed_metadata_symbols: &'a BTreeSet<String>,
     cargo_log: &'a Path,
     compiler_invocations: &'a Path,
     artifacts: &'a [ArtifactReport],

@@ -27,6 +27,12 @@ fn packed_payload_markers_are_not_format_headers() -> Result<()> {
             .arg(&packed)
             .arg(&clean),
     )?;
+    let original = fs::read(&packed)?;
+    // RREA: explicit overlay literals; ELF packing can compress the source's appended bytes.
+    OpenOptions::new()
+        .append(true)
+        .open(&packed)?
+        .write_all(b"RREA UPX!")?;
     let inspection = validate_packed(&packed)?;
     ensure!(
         inspection
@@ -35,6 +41,7 @@ fn packed_payload_markers_are_not_format_headers() -> Result<()> {
             .any(|hint| hint.marker == "RREA"),
         "payload hints were silently discarded"
     );
+    fs::write(&packed, &original)?;
     checked_output(
         Command::new(&tools.upx)
             .args(["--no-env", "--decompress", "-o"])
@@ -45,7 +52,6 @@ fn packed_payload_markers_are_not_format_headers() -> Result<()> {
         fs::read(&clean)? == fs::read(&recovered)?,
         "payload changed"
     );
-    let original = fs::read(&packed)?;
     for tag in [b"UPX!", b"RREA"] {
         let mut corrupt = original.clone();
         corrupt[inspection.header_offset..inspection.header_offset + 4].copy_from_slice(tag);

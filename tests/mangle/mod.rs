@@ -61,7 +61,12 @@ fn pe_mangling_preserves_imports_exports_code_and_packing() -> Result<()> {
     let mut expected = audit::inspect(&path, true, &[])?;
     let renamed = name("std-abcd.dll", "std@fixture-version")?;
     let names = BTreeMap::from([("std-abcd.dll".to_owned(), renamed.clone())]);
-    rewrite(&path, &names, &mut expected)?;
+    rewrite(
+        &path,
+        &names,
+        &crate::symbols::Plan::default(),
+        &mut expected,
+    )?;
     audit::same_runtime_metadata(&expected, &audit::inspect(&path, true, &[])?)?;
     let data = fs::read(&path)?;
     let before = PeFile64::parse(original.as_slice())?;

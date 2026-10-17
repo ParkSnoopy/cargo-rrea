@@ -6,6 +6,7 @@ mod dynamic;
 mod mangle;
 mod project;
 mod support;
+mod symbols;
 mod toolchain;
 mod tools;
 
@@ -49,6 +50,12 @@ struct BuildOptions {
     /// Keep original library names instead of stable 16-character hashes.
     #[arg(long = "no-mangle-library", action = clap::ArgAction::SetFalse, default_value_t = true)]
     mangle_library: bool,
+    /// Rename eligible ELF Rust symbols; asserts all external/name-looked-up names are kept.
+    #[arg(long)]
+    mangle_symbols: bool,
+    /// Preserve an exact Rust dynamic symbol used by external consumers or runtime lookup.
+    #[arg(long = "keep-symbol", value_name = "NAME", requires = "mangle_symbols")]
+    keep_symbols: Vec<String>,
     #[command(flatten)]
     selection: SelectionOptions,
     #[command(flatten)]
