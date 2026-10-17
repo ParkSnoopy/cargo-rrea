@@ -3,8 +3,8 @@ members  = ["app", "logic", "literal", "shared"]
 resolver = "3"
 
 [profile.release]
-# Preserve the application's panic strategy.
-panic = "unwind"
+# The protected build must select unwind without editing this manifest.
+panic = "abort"
 lto   = true
 debug = 2
 strip = "none"

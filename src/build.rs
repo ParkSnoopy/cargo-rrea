@@ -24,6 +24,8 @@ use crate::{
     tools,
 };
 
+const PANIC_STRATEGY: &str = "unwind";
+
 pub fn run(options: &BuildOptions) -> Result<()> {
     let target = check_target(options)?;
     let obfuscation = &options.obfuscation;
@@ -47,7 +49,7 @@ pub fn run(options: &BuildOptions) -> Result<()> {
     let log = prepared.directory.join("cargo.jsonl");
     writeln!(
         io::stderr().lock(),
-        "building with {}; log: {}",
+        "building with {} (panic={PANIC_STRATEGY}); log: {}",
         tools.compiler_release.tag,
         log.display()
     )?;
@@ -97,6 +99,7 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         compiler: &tools.compiler_release,
         upx: &tools.upx_build,
         compiler_version: &compiler_version,
+        panic_strategy: PANIC_STRATEGY,
         obfuscation: &obfuscation.llvm_flags(),
         disabled_obfuscation: &obfuscation.disabled,
         mangle_library: obfuscation.enabled(Feature::MangleLibrary),
@@ -238,6 +241,7 @@ fn prepare_build(
         .env_remove("RUSTC_WRAPPER")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env("CARGO_INCREMENTAL", "0")
+        .env("CARGO_PROFILE_RELEASE_PANIC", PANIC_STRATEGY)
         .env("RREA_COMPILER", &tools.compiler)
         .env("RREA_TARGET", target)
         .env("RREA_WORKSPACE", &workspace)
@@ -839,6 +843,10 @@ fn validate_flags(args: &[OsString], strip_enabled: bool) -> Result<()> {
         if let Some(option) = codegen {
             let (name, value) = option.split_once('=').unwrap_or((option, "yes"));
             ensure!(
+                name != "panic" || value == PANIC_STRATEGY,
+                "{option} conflicts with the shared runtime, which requires panic={PANIC_STRATEGY}; remove explicit panic compiler flags"
+            );
+            ensure!(
                 !matches!(name, "lto" | "linker-plugin-lto")
                     || matches!(value, "n" | "no" | "off" | "false"),
                 "{option} conflicts with the shared-library build layout; remove explicit LTO compiler flags"
@@ -883,6 +891,7 @@ struct BuildReport<'a> {
     compiler: &'a tools::ReleaseAsset,
     upx: &'a tools::UpxBuild,
     compiler_version: &'a str,
+    panic_strategy: &'a str,
     obfuscation: &'a [&'a str],
     disabled_obfuscation: &'a BTreeSet<Feature>,
     mangle_library: bool,
@@ -910,6 +919,8 @@ mod tests {
             vec!["-Clinker-plugin-lto=yes"],
             vec!["-C", "lto=thin"],
             vec!["-Clto=fat"],
+            vec!["-Cpanic=abort"],
+            vec!["-C", "panic=abort"],
         ] {
             let args: Vec<_> = args.into_iter().map(OsString::from).collect();
             assert!(validate_flags(&args, true).is_err());
@@ -921,6 +932,7 @@ mod tests {
             "-Clink-arg=-pthread",
             "-Clto=off",
             "-Clinker-plugin-lto=no",
+            "-Cpanic=unwind",
         ]
         .into_iter()
         .map(OsString::from)

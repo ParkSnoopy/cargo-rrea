@@ -34,6 +34,8 @@ Individual `--no-<feature>` switches disable only that feature, such as `--no-fl
 The complete [feature contract](docs/architecture.md#obfuscation-policy) defines pass selection, stripping, path remapping, and packing.  
 Stripping temporarily disables debug information and removes metadata without editing `Cargo.toml`; `--no-strip` retains the project's debug/strip settings.  
 `build` requires `--release` (or `-r`); development profiles are not supported.  
+Release builds automatically use `panic = "unwind"` to match the shared runtime, even when the project requests `abort`.  
+This changes panic behavior without editing `Cargo.toml`; no environment-variable prefix is needed.  
 The default follows the [closed-bundle symbol contract](docs/rust-fingerprints.md#closed-bundle-symbol-map).  
 Externally consumed or runtime-looked-up Rust names require `--keep-symbol NAME`, unless symbol mangling is disabled.  
 Windows currently requires `--no-mangle-symbols`; unsupported default features fail before building rather than silently weakening protection.  

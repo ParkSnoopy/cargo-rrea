@@ -373,6 +373,7 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
             .env("XDG_CACHE_HOME", cache.path())
             .env("LOCALAPPDATA", cache.path())
             .env("CARGO_NET_OFFLINE", "true")
+            .env("CARGO_PROFILE_RELEASE_PANIC", "abort")
             .env("CARGO_TARGET_DIR", &target)
             .args(["build", "--release"])
             .args(selection),
@@ -481,6 +482,10 @@ fn verify_policy_switch(
 
 fn verify_obfuscation(distribution: &Distribution, selection: &[&str]) -> Result<()> {
     let report = &distribution.report;
+    ensure!(
+        report["panic_strategy"] == "unwind",
+        "incorrect shared-runtime panic strategy"
+    );
     let disabled: BTreeSet<_> = selection
         .iter()
         .filter_map(|flag| flag.strip_prefix("--no-"))
@@ -514,6 +519,12 @@ fn verify_obfuscation(distribution: &Distribution, selection: &[&str]) -> Result
     );
     for line in log.lines() {
         let args: Vec<String> = serde_json::from_str(line)?;
+        ensure!(
+            !args
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "panic=abort" | "-Cpanic=abort")),
+            "abort strategy reached a target compiler invocation"
+        );
         let actual: Vec<_> = args
             .iter()
             .filter(|arg| arg.starts_with("-Cllvm-args="))
@@ -1045,30 +1056,38 @@ fn verify_failed_publication(
         .iter()
         .map(fs::read)
         .collect::<std::io::Result<_>>()?;
-    let failed = cli()
-        .current_dir(root)
-        .env("CARGO_TARGET_DIR", target)
-        .args([
-            "build",
-            "--release",
-            "--package",
-            "fixture-app",
-            "--bins",
-            "--offline",
-        ])
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .args(policy_arguments(&distribution.report)?)
-        .env("RUSTFLAGS", "-Cllvm-args=--inline-threshold=1")
-        .output()?;
-    ensure!(
-        !failed.status.success(),
-        "conflicting protection flags succeeded"
-    );
-    ensure!(
-        String::from_utf8_lossy(&failed.stderr).contains("external LLVM arguments conflict"),
-        "missing protection conflict diagnostic: {}",
-        String::from_utf8_lossy(&failed.stderr)
-    );
+    for (flags, diagnostic) in [
+        (
+            "-Cllvm-args=--inline-threshold=1",
+            "external LLVM arguments conflict",
+        ),
+        ("-Cpanic=abort", "requires panic=unwind"),
+    ] {
+        let failed = cli()
+            .current_dir(root)
+            .env("CARGO_TARGET_DIR", target)
+            .args([
+                "build",
+                "--release",
+                "--package",
+                "fixture-app",
+                "--bins",
+                "--offline",
+            ])
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .args(policy_arguments(&distribution.report)?)
+            .env("RUSTFLAGS", flags)
+            .output()?;
+        ensure!(
+            !failed.status.success(),
+            "conflicting protection flags succeeded: {flags}"
+        );
+        ensure!(
+            String::from_utf8_lossy(&failed.stderr).contains(diagnostic),
+            "missing protection conflict diagnostic: {}",
+            String::from_utf8_lossy(&failed.stderr)
+        );
+    }
     if !distribution.report["symbol_mangling"].is_null() {
         let failed = cli()
             .current_dir(root)

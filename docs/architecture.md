@@ -12,6 +12,10 @@ The default enables every implemented obfuscation feature and packs executables 
 Unless `--no-strip` is selected, `build` applies `debug = 0` and `strip = "symbols"` through command-local Cargo configuration.
 It does not edit any `Cargo.toml`, including on failed builds.
 Project profile settings, comments, and the panic strategy remain unchanged on disk.
+The child Cargo process always receives `CARGO_PROFILE_RELEASE_PANIC=unwind`, overriding the project's release panic setting and any inherited value of that environment variable.
+This is required by the precompiled dynamic standard library's `panic_unwind` runtime and is independent of obfuscation opt-outs.
+For projects configured with `panic = "abort"`, the built program deliberately uses unwinding instead of immediate abort.
+The build diagnostic and report expose the effective strategy.
 
 Application builds select the acquired Arkari compiler and matching sysroot without changing the active Rust installation.
 A compiler failure stops the build without ordinary-rustc fallback.
@@ -43,7 +47,7 @@ Disabling every pass leaves the same acquired compiler, linkage, and remaining t
 The selected feature set is serialized into the shared compiler policy and contributes to the build-cache key.
 The wrapper, post-link stages, and reports consume that policy rather than independent defaults.
 External LLVM arguments remain rejected, even when all passes are disabled, so they cannot silently override the selection.
-LTO restrictions, runtime-metadata comparisons, input integrity, and atomic publication remain mandatory.
+LTO restrictions, the unwind panic strategy, runtime-metadata comparisons, input integrity, and atomic publication remain mandatory.
 `--no-strip` does not disable path checking, and `--no-remap-paths` does not disable stripping.
 Disabling these protections can expose metadata or local paths; the opt-outs are recorded in each report.
 `--no-upx` does not remove the bundled helper or its installation prerequisites, but no UPX subprocess runs for that build.
@@ -128,6 +132,8 @@ Application builds override the release profile's cross-crate LTO setting with `
 Cargo must emit native objects for dependencies that the wrapper also builds as shared libraries, rather than bitcode-only linker-plugin inputs.
 This retains Cargo's default local ThinLTO where applicable and the selected obfuscation passes.
 Explicit compiler flags that enable LTO or linker-plugin LTO are rejected because they conflict with this shared-library layout.
+Explicit panic codegen flags other than `-Cpanic=unwind` are also rejected with a runtime-compatibility diagnostic before invoking the target compiler.
+Remove conflicting `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` entries rather than overriding the built-in strategy.
 
 The pipeline applies the selected stripping and packing stages to executables and required Rust shared libraries.
 Runtime inclusion follows the actual ELF/PE import-library graph from the selected executables.
@@ -178,6 +184,7 @@ The report records compiler release provenance, the UPX source commit, overlay a
 `symbol_mangling` is null when renaming is disabled and otherwise records the exact map and retention reasons.
 `removed_metadata_symbols` records compiler-only export removals independently of renaming.
 `disabled_obfuscation` lists explicit feature opt-outs; `obfuscation` records the actual injected LLVM flags.
+`panic_strategy` records the required effective release strategy, `unwind`.
 Without packing, artifacts have `packed = false`, null `packed_audit`, and identical unpacked/output sizes and hashes.
 Artifact paths are absolute distribution paths.
 Log paths resolve against the report directory.
@@ -278,9 +285,10 @@ cargo package --locked
 The regular tests verify the bootstrapped compiler and matching sysroot, CLI and invalid-manifest rejection, archive extraction boundaries, detached offline cache misses, unsupported targets, and UPX cache integrity.
 The PE64 fixture checks import/export/code preservation and byte-identical packing recovery before and after name mangling, including differing IAT and lookup contents.
 The ignored native test exercises `cargo rrea build --release` directly for both default workspace selection and an explicitly selected executable package.
-Its project requests debug information and unstripped output, and both successful and failed builds must preserve workspace and member manifests byte for byte.
+Its project requests `panic = "abort"`, debug information, and unstripped output, and both successful and failed builds must preserve workspace and member manifests byte for byte.
+An inherited abort-profile environment setting must also be overridden, while explicit conflicting panic compiler flags must fail without replacing published artifacts.
 It uses the bootstrap compiler offline with an initially empty user cache.
-It compares both fixture executables against an ordinary build, including panic and unwind behavior.
+It compares both fixture executables against an ordinary development build, including panic and unwind behavior, and checks the reported strategy and target compiler arguments.
 The fixture includes an allocating `no_std` dependency and its transitive `no_std` library.
 It also checks relocated loading, failure without the packed transitive dependency, and preservation of published output after compilation failure.
 The test covers member manifests, custom Cargo target directories, stale-file removal, and single-executable selection.
