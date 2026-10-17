@@ -45,7 +45,7 @@ Neither filename mangling nor static-symbol stripping addresses all of these lea
   Preserve upstream source notices and licenses, verify the pristine [source pin](../thirdparty/upx-source.json), and record the overlay hash separately.
 - [x] Coordinate native packer/stub format tags and remove post-packing `RREA` rewriting instead of blindly replacing runtime bytes.
 - [x] Keep the source patch manageable for upstream updates.
-  The patch is 408 lines instead of 4,716, with generated headers/maps in a separately verified archive.
+  The patch is 382 lines instead of 4,716, with generated headers/maps in a separately verified archive.
   Follow the [regeneration and acceptance procedure](upx-maintenance.md), including exact source/patch/archive binding and byte-identical regeneration.
 - [ ] Evaluate structural detection separately from string detection, including stub instruction patterns and segment layout.
   Layout/disassembly inspection and live memfd probes establish that a recognizable loader remains despite empty native mapping names.

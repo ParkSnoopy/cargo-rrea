@@ -17,7 +17,7 @@ All inputs are watched and read on each build-script run.
 A changed patch with stale stubs fails before compiler acquisition or native compilation.
 Reports include separate upstream, patch, stub-archive, and executable identities.
 
-The initial split reduces the patch from 4,716 lines / 348,462 bytes to 408 lines / 18,281 bytes.
+The source-only unified diff is 382 lines / 17,293 bytes, compared with the original 4,716 lines / 348,462 bytes.
 The accompanying ZIP is 70,659 bytes.
 Its five generated headers and five changed tracked auxiliary files were reproduced byte-for-byte in a fresh clone.
 Splitting generated data reduces textual merge conflicts, not the need to regenerate and test it when upstream changes.
@@ -37,6 +37,20 @@ The legacy tools require a working 32-bit Linux loader and zlib runtime.
 Do not replace them with the host compiler and assume identical output.
 The upstream `src/stub/Makefile` owns compiler, linker, object-info embedding, and `bin2h` arguments.
 
+Before formatting or exporting the overlay, run upstream's pinned formatter in check-only mode.
+With `STUBTOOLS` naming the verified extracted tools directory, check the current overlay files covered by upstream's formatter target:
+
+```sh
+(cd "$UPX_WORK" && UPX_CLANG_FORMAT="$STUBTOOLS/clang-format-15.0.6" \
+  bash misc/scripts/upx-clang-format.sh --dry-run --Werror \
+  src/conf.h src/packer.cpp src/pefile.cpp src/pefile.h)
+```
+
+If this fails, apply the same wrapper with `-i` and `--lines=START:END` only to reported ranges changed by the overlay, then repeat the check.
+Compare with pristine upstream to distinguish existing formatting from introduced violations.
+Follow the file exclusions in upstream's `src/Makefile` rather than formatting the whole tree, assembly, or generated headers.
+This is a formatting check, not a `clang-tidy` analysis.
+
 With `UPX_WORK` naming the patched clone, `STUBTOOLS` the verified extracted tools directory, and `STUB_RUNTIME` the matching legacy runtime library directory, rebuild all native paths:
 
 ```sh
@@ -45,20 +59,21 @@ make -B -C "$UPX_WORK/src/stub" \
   STUBS='amd64-linux.elf-entry.h amd64-linux.elf-so_entry.h amd64-linux.elf-fold.h amd64-linux.elf-so_fold.h amd64-win64.pe.h' all
 ```
 
-Review the source and generated diffs, then create one overlay commit in that disposable clone.
-Export only the source paths to the consuming repository, whose absolute path is `RREA_ROOT`:
+Review the source and generated diffs against the pinned revision in the disposable clone.
+Export only the source paths as a unified diff without creating an overlay commit or stale mail headers.
+The consuming repository's absolute path is `RREA_ROOT`:
 
 ```sh
-git -C "$UPX_WORK" format-patch --stdout -1 -- \
+git -C "$UPX_WORK" diff --binary -- \
   src/conf.h src/packer.cpp src/pefile.cpp src/pefile.h src/stub/src \
   > "$RREA_ROOT/thirdparty/upx.patch"
 ```
 
-Generate the bundle from the generated files changed by that same commit.
+Generate the bundle from the generated files changed against that same pinned revision.
 Use a new, empty `STUB_STAGE` directory and a new output archive rather than updating an old ZIP, which could retain obsolete entries:
 
 ```sh
-git -C "$UPX_WORK" diff HEAD^ HEAD --name-only -- \
+git -C "$UPX_WORK" diff --name-only -- \
   src/stub ':!src/stub/src' > "$STUB_STAGE.files"
 while IFS= read -r path; do
   mkdir -p "$STUB_STAGE/$(dirname "$path")"
@@ -69,10 +84,11 @@ done < "$STUB_STAGE.files"
 ```
 
 Replace the archive and update its manifest with the actual revision, patch hash, and ZIP hash.
+For formatting confined to packer C++ code, retain the archive when all stub generator inputs are unchanged and update only its patch binding.
 For upstream upgrades, also update the pristine source revision/digest using the [architecture procedure](architecture.md#source-development).
 Retain comments identifying project-owned byte constants, such as `/* RREA */`.
 Never hand-edit numeric generated arrays or remove a checksum check to accommodate mismatched stubs.
-An outer `git diff --check` can flag legitimate context-line spaces inside a format-patch file.
+An outer `git diff --check` can flag legitimate context-line spaces inside the patch file.
 Check the source diff in the disposable clone and actual strict patch application rather than rewriting patch transport syntax.
 
 ## Acceptance

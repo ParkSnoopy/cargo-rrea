@@ -1,24 +1,3 @@
-From dc37efca89409ee4602b4d3421e658af5d0a8621 Mon Sep 17 00:00:00 2001
-From: ParkSnoopy <117149837+ParkSnoopy@users.noreply.github.com>
-Date: Sat, 17 Oct 2026 02:22:01 +0800
-Subject: [PATCH] Remove identification banners and coordinate native stub
- signatures
-
----
- src/conf.h                              |  4 +-
- src/packer.cpp                          | 54 ++-----------------------
- src/pefile.cpp                          | 35 +++++++++++-----
- src/pefile.h                            |  2 +-
- src/stub/src/amd64-linux.elf-entry.S    |  6 +--
- src/stub/src/amd64-linux.elf-main2.c    |  2 +-
- src/stub/src/amd64-linux.elf-so_entry.S |  6 +--
- src/stub/src/amd64-linux.elf-so_main.c  |  2 +-
- src/stub/src/include/header.S           | 18 ++++-----
- src/stub/src/include/linux.h            |  2 +-
- src/stub/src/upxfd_android.c            |  4 +-
- src/stub/src/upxfd_linux.c              |  4 +-
- 12 files changed, 53 insertions(+), 86 deletions(-)
-
 diff --git a/src/conf.h b/src/conf.h
 index 8166b26e..88c7286e 100644
 --- a/src/conf.h
@@ -100,10 +79,10 @@ index 864d3ff8..18632986 100644
  
  void Packer::initLoader(unsigned arch, const void *pdata, int plen, int small, int pextra) {
 diff --git a/src/pefile.cpp b/src/pefile.cpp
-index e109ca37..69e12993 100644
+index e109ca37..450b6b02 100644
 --- a/src/pefile.cpp
 +++ b/src/pefile.cpp
-@@ -1157,9 +1157,10 @@ unsigned PeFile::processImports0(ord_mask_t ord_mask) { // pass 1
+@@ -1157,9 +1157,9 @@ unsigned PeFile::processImports0(ord_mask_t ord_mask) { // pass 1
  
          const unsigned esize = ptr_udiff_bytes(tarr, idlls[ic]->lookupt);
          lookups.add_interval(idlls[ic]->lookupt, esize);
@@ -112,12 +91,11 @@ index e109ca37..69e12993 100644
 -            byte *a = ibuf.subref("bad import name %#x %#x", idlls[ic]->iat, esize);
 +        byte *const a = ibuf.subref("bad import name %#x %#x", idlls[ic]->iat, esize);
 +        // RREA: retain PE64 IAT bytes for lossless offline recovery.
-+        if (getFormat() != UPX_F_W64PE_AMD64 &&
-+            ptr_diff_bytes(a, idlls[ic]->lookupt) != 0) {
++        if (getFormat() != UPX_F_W64PE_AMD64 && ptr_diff_bytes(a, idlls[ic]->lookupt) != 0) {
              // ptr_check_no_overlap(a, esize, idlls[ic]->lookupt, esize);
              memmove(a, idlls[ic]->lookupt, esize);
              iats.add_interval(idlls[ic]->iat, esize);
-@@ -1175,6 +1176,10 @@ unsigned PeFile::processImports0(ord_mask_t ord_mask) { // pass 1
+@@ -1175,6 +1175,10 @@ unsigned PeFile::processImports0(ord_mask_t ord_mask) { // pass 1
  
      // OutputFile::dump("x0.imp", oimport, soimport);
  
@@ -128,7 +106,7 @@ index e109ca37..69e12993 100644
      unsigned ilen = 0;
      names.flatten();
      if (names.ivnum > 1) {
-@@ -1237,7 +1242,7 @@ PeFile::Export::~Export() noexcept {
+@@ -1237,7 +1241,7 @@ PeFile::Export::~Export() noexcept {
      }
  }
  
@@ -137,7 +115,7 @@ index e109ca37..69e12993 100644
      memcpy(&edir, base + eoffs, sizeof(export_dir_t));
      size = sizeof(export_dir_t);
      iv.add_interval(eoffs, size);
-@@ -1314,7 +1319,8 @@ void PeFile::Export::convert(unsigned eoffs, unsigned esize) {
+@@ -1314,7 +1318,8 @@ void PeFile::Export::convert(unsigned eoffs, unsigned esize) {
      size += len;
      iv.add_interval(edir.ordinaltable, len);
      iv.flatten();
@@ -147,7 +125,7 @@ index e109ca37..69e12993 100644
          iv.clear();
  #if TESTING
      else
-@@ -1365,7 +1371,7 @@ void PeFile::processExports(Export *xport) { // pass1
+@@ -1365,7 +1370,7 @@ void PeFile::processExports(Export *xport) { // pass1
          soexport = 0;
          return;
      }
@@ -156,7 +134,7 @@ index e109ca37..69e12993 100644
      soexport = ALIGN_UP(xport->getsize(), 4u);
      mb_oexport.alloc(soexport);
      mb_oexport.clear();
-@@ -2669,8 +2675,8 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh, unsigned subsystem_mask,
+@@ -2669,8 +2674,8 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh, unsigned subsystem_mask,
      const unsigned ncsize_virt_increase = soxrelocs && (ncsize & oam1) == 0 ? 8 : 0;
  
      // fill the sections
@@ -167,7 +145,7 @@ index e109ca37..69e12993 100644
      // after some windoze debugging I found that the name of the sections
      // DOES matter :( .rsrc is used by oleaut32.dll (TYPELIBS)
      // and because of this lame dll, the resource stuff must be the
-@@ -2678,7 +2684,7 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh, unsigned subsystem_mask,
+@@ -2678,7 +2683,7 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh, unsigned subsystem_mask,
      // too idiot to use the data directories... M$ suxx 4 ever!
      // ... even worse: exploder.exe in NiceTry also depends on this to
      // locate version info
@@ -176,7 +154,7 @@ index e109ca37..69e12993 100644
  
      osection[0].vaddr = rvamin;
      osection[1].vaddr = s1addr;
-@@ -2980,6 +2986,10 @@ void PeFile::rebuildImports(SPAN_S(byte) & extra_info, ord_mask_t ord_mask, bool
+@@ -2980,6 +2985,10 @@ void PeFile::rebuildImports(SPAN_S(byte) & extra_info, ord_mask_t ord_mask, bool
      const unsigned inamespos = mem_size(1, get_le32(extra_info + 4));
      extra_info += 8;
  
@@ -187,7 +165,7 @@ index e109ca37..69e12993 100644
      unsigned sdllnames = 0;
  
      IPTR_VAR_OFFSET(const byte, const my_import, IDADDR(PEDIR_IMPORT) - isection[2].vaddr);
-@@ -3134,7 +3144,9 @@ void PeFile::unpack0(OutputFile *fo, const ht &ih, ht &oh, ord_mask_t ord_mask,
+@@ -3134,7 +3143,9 @@ void PeFile::unpack0(OutputFile *fo, const ht &ih, ht &oh, ord_mask_t ord_mask,
      rebuildImports<LEXX>(extra_info, ord_mask, set_oft);
      rebuildRelocs(extra_info, sizeof(ih.imagebase) * 8, oh.flags, oh.imagebase);
      rebuildTls();
@@ -198,13 +176,12 @@ index e109ca37..69e12993 100644
  
      if (iobjs > 3) {
          // read the resource section if present
-@@ -3193,7 +3205,8 @@ int PeFile::canUnpack0(unsigned max_sections, unsigned objs, unsigned ih_entry,
+@@ -3193,7 +3204,7 @@ int PeFile::canUnpack0(unsigned max_sections, unsigned objs, unsigned ih_entry,
      fi->readx(isection, sizeof(pe_section_t) * objs);
      bool is_packed = (objs <= max_sections && (IDSIZE(15) || ih_entry > isection[1].vaddr));
      bool found_ph = false;
 -    if (memcmp(isection[0].name, "UPX", 3) == 0) {
-+    if (memcmp(isection[0].name, ".bss", 4) == 0 &&
-+        memcmp(isection[1].name, ".text", 5) == 0) {
++    if (memcmp(isection[0].name, ".bss", 4) == 0 && memcmp(isection[1].name, ".text", 5) == 0) {
          // current version
          fi->seek(isection[1].rawdataptr - 64, SEEK_SET);
          found_ph = readPackHeader(1024);
@@ -403,6 +380,3 @@ index f121e221..508d740c 100644
                  exit(127);
              }
              // Error from open() is unknown. Cause later SIGSEGV.
--- 
-2.53.0
-

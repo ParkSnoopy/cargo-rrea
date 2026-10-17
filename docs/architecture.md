@@ -138,7 +138,7 @@ Log paths resolve against the report directory.
 | [src/support.rs](../src/support.rs) | Shared child-process checks and file locks |
 | [build.rs](../build.rs) | Compiler bootstrap, pinned UPX source validation, native compilation, and embedding |
 | [thirdparty/upx-source.json](../thirdparty/upx-source.json) | UPX revision and recursive source-content digest for checkout and crate builds |
-| [thirdparty/upx.patch](../thirdparty/upx.patch) | Source-only format-patch overlay with coordinated native packer/stub changes |
+| [thirdparty/upx.patch](../thirdparty/upx.patch) | Source-only unified diff with coordinated native packer/stub changes |
 | [thirdparty/upx-stubs.json](../thirdparty/upx-stubs.json) | Integrity and source/patch binding for the generated native-stub archive |
 | [src/toolchain.rs](../src/toolchain.rs) | Compiler release selection, verified acquisition, and bounded ZIP extraction shared by bootstrap and runtime |
 | [src/tools.rs](../src/tools.rs) | Runtime cache selection and embedded UPX materialization |
