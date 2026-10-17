@@ -8,6 +8,8 @@ version = "0.1.0"
 dependencies = [
  "fixture-literal",
  "fixture-logic",
+ "fixture-native",
+ "fixture-native-user",
 ]
 
 [[package]]
@@ -19,6 +21,17 @@ name = "fixture-logic"
 version = "0.1.0"
 dependencies = [
  "fixture-shared",
+]
+
+[[package]]
+name = "fixture-native"
+version = "0.1.0"
+
+[[package]]
+name = "fixture-native-user"
+version = "0.1.0"
+dependencies = [
+ "fixture-native",
 ]
 
 [[package]]

@@ -14,6 +14,13 @@ fn main() {
             let input: u32 = argument.parse().expect("integer input");
             println!("{}", fixture_logic::describe(std::hint::black_box(input)));
             println!("{}:{GENERATED}", fixture_literal::message!());
+            // SAFETY: this executable calls the native counter only on its main thread.
+            let indirect = unsafe { fixture_native_user::next(input) };
+            // SAFETY: the previous call has completed on the same thread.
+            let direct = unsafe { fixture_native::fixture_native_next(input) };
+            assert_eq!(indirect, 7_u32.wrapping_add(input));
+            assert_eq!(direct, indirect.wrapping_add(input));
+            println!("native:{indirect}:{direct}");
         }
     }
 }

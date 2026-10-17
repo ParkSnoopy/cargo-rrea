@@ -292,7 +292,12 @@ fn add_runtime_libraries(
     let mut libraries: BTreeMap<_, _> = dynamic::read_libraries(library_log)?
         .into_iter()
         .filter(|library| active_rlibs.contains(&library.rlib))
-        .map(|library| (library.dylib, library.identity))
+        .filter_map(|library| {
+            match library.linkage {
+                dynamic::Linkage::Static => None,
+                dynamic::Linkage::Dynamic(path) => Some((path, library.identity)),
+            }
+        })
         .collect();
     libraries.insert(
         dynamic::standard_library(sysroot, tools::host()?)?,

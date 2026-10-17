@@ -332,6 +332,15 @@ fn real_obfuscation_opt_out_pipeline_preserves_behavior() -> Result<()> {
 
 fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
     let root = fixture()?;
+    verify_native_fixture(&root, selection).map_err(|error| {
+        error.context(format!(
+            "failed fixture retained at {}",
+            root.keep().display()
+        ))
+    })
+}
+
+fn verify_native_fixture(root: &tempfile::TempDir, selection: &[&str]) -> Result<()> {
     let manifest = fs::read(root.path().join("Cargo.toml"))?;
     let member = fs::read(root.path().join("app/Cargo.toml"))?;
     let target = root.path().join(if selection.is_empty() {
@@ -514,11 +523,20 @@ fn verify_obfuscation(distribution: &Distribution, selection: &[&str]) -> Result
         .context("missing invocation log")?;
     let log = fs::read_to_string(distribution.path.join(invocation_log))?;
     ensure!(
-        log.contains("fixture_logic"),
+        log.contains("fixture_logic") && log.contains("fixture_native_user"),
         "dependency invocations are missing"
     );
     for line in log.lines() {
         let args: Vec<String> = serde_json::from_str(line)?;
+        if args.windows(2).any(|pair| {
+            pair[0] == "--crate-name"
+                && matches!(pair[1].as_str(), "fixture_native" | "fixture_native_user")
+        }) {
+            ensure!(
+                !args.iter().any(|arg| arg == "--crate-type=dylib"),
+                "native archive owner or consumer was converted to a dylib"
+            );
+        }
         ensure!(
             !args
                 .iter()
@@ -679,9 +697,10 @@ fn verify_behavior(baseline: &Path, paths: &[PathBuf]) -> Result<()> {
             let actual = Command::new(path).arg(argument).output()?;
             ensure!(
                 actual.status.code() == expected.status.code(),
-                "exit: {path:?} {argument}: actual={:?}, expected={:?}",
-                actual.status.code(),
-                expected.status.code()
+                "exit: {path:?} {argument}: actual={}, expected={}; stderr={}",
+                actual.status,
+                expected.status,
+                String::from_utf8_lossy(&actual.stderr)
             );
             ensure!(
                 actual.stdout == expected.stdout,

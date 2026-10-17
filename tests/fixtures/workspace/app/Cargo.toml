@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-fixture-logic   = { path = "../logic" }
-fixture-literal = { path = "../literal" }
+fixture-logic       = { path = "../logic" }
+fixture-literal     = { path = "../literal" }
+fixture-native     = { path = "../native" }
+fixture-native-user = { path = "../native-user" }
 
 [[bin]]
 name = "fixture"

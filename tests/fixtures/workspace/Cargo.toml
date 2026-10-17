@@ -1,5 +1,5 @@
 [workspace]
-members  = ["app", "logic", "literal", "shared"]
+members  = ["app", "logic", "literal", "shared", "native", "native-user"]
 resolver = "3"
 
 [profile.release]

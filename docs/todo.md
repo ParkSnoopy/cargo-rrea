@@ -93,6 +93,9 @@ Neither filename mangling nor static-symbol stripping addresses all of these lea
   Linux fixtures and the six-variant Base116 evaluation pass these applicable gates.
   Native Windows execution is still unverified, despite passing PE parsing, rewriting, packing, and exact-recovery fixtures.
   Failed stock unpacking alone is not acceptance, and removal of known signatures is not proof that Rust or UPX is unrecognizable.
+- [ ] Diagnose intermittent signal termination of the packed `secondary` native fixture.
+  It occurred with `--no-icall` and with the tight ELF layout; subsequent isolated runs and a complete feature matrix passed, which does not explain the earlier failures.
+  Failed native fixtures are retained with full exit-status diagnostics for packed/recovered comparison; do not attribute the failure to LLVM, metadata rewriting, or UPX without a retained reproduction.
 
 ## Investigate remaining exposure
 

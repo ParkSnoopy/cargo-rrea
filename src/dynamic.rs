@@ -24,10 +24,25 @@ pub struct Policy {
 }
 
 #[derive(Clone, Deserialize, Serialize)]
+pub enum Linkage {
+    Static,
+    Dynamic(PathBuf),
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Library {
     pub identity: String,
     pub rlib: PathBuf,
-    pub dylib: PathBuf,
+    pub linkage: Linkage,
+}
+
+impl Library {
+    fn link_path(&self) -> &Path {
+        match &self.linkage {
+            Linkage::Static => &self.rlib,
+            Linkage::Dynamic(path) => path,
+        }
+    }
 }
 
 impl Policy {
@@ -160,6 +175,77 @@ pub fn adapt(
         .filter_map(|arg| Path::new(arg).canonicalize().ok())
         .find_map(|source| policy.sources.get(&source));
     let libraries = read_libraries(library_log)?;
+    let static_linkage = adapt_dependencies(args, &libraries)?;
+    // Newer Cargo versions omit embedded metadata from rlibs by default.
+    args.push("-Zembed-metadata=yes".into());
+    args.push("-Cprefer-dynamic=yes".into());
+    if cfg!(target_os = "linux") {
+        // Reserve 16 bytes per possible renamed dependency, plus alignment slack.
+        // Repeated /. components resolve to the same directory and are removed later.
+        let padding = if policy.obfuscation.enabled(Feature::MangleLibrary) {
+            "/.".repeat(8 * (policy.sources.len() + 4))
+        } else {
+            String::new()
+        };
+        args.push(format!("-Clink-arg=-Wl,-rpath,$ORIGIN{padding}").into());
+    }
+    let Some(identity) = direct else {
+        return Ok(None);
+    };
+    let kinds: Vec<_> = args
+        .windows(2)
+        .filter(|pair| pair[0] == "--crate-type")
+        .filter_map(|pair| pair[1].to_str())
+        .collect();
+    ensure!(
+        kinds
+            .iter()
+            .all(|kind| matches!(*kind, "lib" | "rlib" | "dylib")),
+        "a direct Rust dependency has an incompatible crate type"
+    );
+    ensure!(
+        !static_linkage || !kinds.contains(&"dylib"),
+        "native-linked Rust dependencies require lib or rlib crate types"
+    );
+    let name = value(args, "--crate-name").context("missing crate name")?;
+    let output =
+        PathBuf::from(value(args, "--out-dir").context("missing library output directory")?);
+    let extra = value(args, "-Cextra-filename").unwrap_or("");
+    let stem = format!("{name}{extra}");
+    let library = Library {
+        identity: identity.clone(),
+        rlib: output.join(format!("lib{stem}.rlib")),
+        linkage: if static_linkage {
+            Linkage::Static
+        } else {
+            Linkage::Dynamic(output.join(if cfg!(windows) {
+                format!("{stem}.dll")
+            } else {
+                format!("lib{stem}.so")
+            }))
+        },
+    };
+    if static_linkage {
+        return Ok(Some(library));
+    }
+    if !kinds.contains(&"dylib") {
+        args.push("--crate-type=dylib".into());
+    }
+    // A no_std library still needs the application's allocator and panic runtime.
+    args.extend([
+        "-Zunstable-options".into(),
+        "--extern".into(),
+        "force,nounused:std".into(),
+    ]);
+    Ok(Some(library))
+}
+
+fn adapt_dependencies(args: &mut [OsString], libraries: &[Library]) -> Result<bool> {
+    // Native symbols declared only through FFI are not exported by a Rust dylib.
+    // Keep their owners and every consumer static so the final link owns one copy.
+    let mut static_linkage = args
+        .iter()
+        .any(|arg| arg.to_str().is_some_and(|text| text.starts_with("-l")));
     for argument in args.iter_mut() {
         let Some(text) = argument.to_str() else {
             continue;
@@ -190,7 +276,10 @@ pub fn adapt(
             let linked = libraries
                 .iter()
                 .find(|library| library.rlib == rlib)
-                .map_or(rlib.as_path(), |library| library.dylib.as_path());
+                .map_or(rlib.as_path(), |library| {
+                    static_linkage |= matches!(library.linkage, Linkage::Static);
+                    library.link_path()
+                });
             *argument = format!(
                 "{name}={}",
                 linked.to_str().context("library path is not UTF-8")?
@@ -198,57 +287,7 @@ pub fn adapt(
             .into();
         }
     }
-    // Newer Cargo versions omit embedded metadata from rlibs by default.
-    args.push("-Zembed-metadata=yes".into());
-    args.push("-Cprefer-dynamic=yes".into());
-    if cfg!(target_os = "linux") {
-        // Reserve 16 bytes per possible renamed dependency, plus alignment slack.
-        // Repeated /. components resolve to the same directory and are removed later.
-        let padding = if policy.obfuscation.enabled(Feature::MangleLibrary) {
-            "/.".repeat(8 * (policy.sources.len() + 4))
-        } else {
-            String::new()
-        };
-        args.push(format!("-Clink-arg=-Wl,-rpath,$ORIGIN{padding}").into());
-    }
-    let Some(identity) = direct else {
-        return Ok(None);
-    };
-    let kinds: Vec<_> = args
-        .windows(2)
-        .filter(|pair| pair[0] == "--crate-type")
-        .filter_map(|pair| pair[1].to_str())
-        .collect();
-    ensure!(
-        kinds
-            .iter()
-            .all(|kind| matches!(*kind, "lib" | "rlib" | "dylib")),
-        "a direct Rust dependency has an incompatible crate type"
-    );
-    let name = value(args, "--crate-name").context("missing crate name")?;
-    let output =
-        PathBuf::from(value(args, "--out-dir").context("missing library output directory")?);
-    let extra = value(args, "-Cextra-filename").unwrap_or("");
-    let stem = format!("{name}{extra}");
-    let library = Library {
-        identity: identity.clone(),
-        rlib: output.join(format!("lib{stem}.rlib")),
-        dylib: output.join(if cfg!(windows) {
-            format!("{stem}.dll")
-        } else {
-            format!("lib{stem}.so")
-        }),
-    };
-    if !kinds.contains(&"dylib") {
-        args.push("--crate-type=dylib".into());
-    }
-    // A no_std library still needs the application's allocator and panic runtime.
-    args.extend([
-        "-Zunstable-options".into(),
-        "--extern".into(),
-        "force,nounused:std".into(),
-    ]);
-    Ok(Some(library))
+    Ok(static_linkage)
 }
 
 pub fn read_libraries(path: &Path) -> Result<Vec<Library>> {
@@ -259,18 +298,19 @@ pub fn read_libraries(path: &Path) -> Result<Vec<Library>> {
         .write(true)
         .open(path)?;
     file.lock_shared()?;
-    let mut libraries = Vec::new();
+    let mut libraries = BTreeMap::new();
     for line in BufReader::new(&file).lines() {
-        libraries.push(serde_json::from_str(&line?)?);
+        let library: Library = serde_json::from_str(&line?)?;
+        libraries.insert(library.rlib.clone(), library);
     }
-    Ok(libraries)
+    Ok(libraries.into_values().collect())
 }
 
 pub fn record(path: &Path, library: &Library) -> Result<()> {
     ensure!(
-        library.dylib.is_file(),
-        "compiler produced no expected shared library: {}",
-        library.dylib.display()
+        library.link_path().is_file(),
+        "compiler produced no expected library: {}",
+        library.link_path().display()
     );
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.lock_exclusive()?;

@@ -50,6 +50,7 @@ cargo rrea build --help
 
 Executable paths are printed on stdout.
 The distribution contains only selected executables and required Rust shared libraries in `target/release/dist/`, beside the selected `Cargo.toml`.
+Native-linking crates and their Rust consumers retain rlib linkage for correct native symbol resolution; their Rust code still receives the selected obfuscation passes.
 This destination does not follow a custom Cargo target directory.
 For a virtual workspace manifest, the destination is beneath the workspace root.
 Distribute the complete `dist` directory.

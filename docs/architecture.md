@@ -119,9 +119,15 @@ The Linux UPX executable links the system C++ runtime, including `libstdc++.so.6
 
 ## Application build and publication
 
-Selected executable packages' own libraries and the complete normal Rust dependency graph also produce Rust `dylib` artifacts.
-Using the complete graph prevents multiple shared libraries from statically embedding the same transitive crate.
-Compiler arguments link consumers against these artifacts, matching either Cargo's `.rlib` or `.rmeta` dependency paths.
+The complete normal Rust dependency graph participates in linkage planning, including selected executable packages' own libraries.
+Eligible Rust libraries also produce `dylib` artifacts; compiler arguments link consumers against them, matching either Cargo's `.rlib` or `.rmeta` dependency paths.
+Crates with native-library arguments (`-l`) retain their `rlib` linkage, as do all Rust consumers of a retained crate, transitively through the final executable.
+This keeps native archive ownership at the final link: a forced Rust dylib need not export native functions declared only through FFI, and separate shared consumers must not embed duplicate native state.
+Native-linked dependencies must use `lib` or `rlib` crate types; an explicit `dylib` requirement fails rather than producing an unsafe mixture.
+Unrelated Rust dependencies and the standard library remain dynamic, and every target Rust crate still receives the selected LLVM passes and path remapping.
+The library log records static or dynamic linkage after a successful compiler invocation, and its latest record for each rlib path determines subsequent consumers and publication.
+Only dynamic records are runtime-bundle candidates; native archives and intermediate rlibs are not distributed.
+Native build scripts remain responsible for C/C++ path remapping; Rust remap flags do not rewrite native debug data or string literals, and the output path audit still rejects leaks.
 Target compiler invocations suppress early JSON artifact notifications so Cargo waits for linkable output rather than scheduling shared-library consumers as soon as metadata is ready.
 They retain embedded Rust metadata for compiler linkage even when Cargo requests separate metadata; distribution stripping still removes it afterward.
 Generated shared libraries explicitly resolve the dynamic standard library for the application's allocator and panic runtime, including dependencies declared `no_std`.
@@ -290,6 +296,10 @@ An inherited abort-profile environment setting must also be overridden, while ex
 It uses the bootstrap compiler offline with an initially empty user cache.
 It compares both fixture executables against an ordinary development build, including panic and unwind behavior, and checks the reported strategy and target compiler arguments.
 The fixture includes an allocating `no_std` dependency and its transitive `no_std` library.
+It also includes a bindings-only C archive and a transitive Rust consumer: direct and indirect calls must share one mutable native counter, while unaffected Rust dependencies remain shared libraries.
+The archive fixture deliberately omits Cargo's optional `links` metadata so native ownership is discovered from actual compiler arguments rather than package names or manifest conventions.
+Its C producer remaps native debug paths so the no-strip case retains debug information without weakening the path-leak audit.
+The producer uses the existing CMake/Ninja prerequisites without registry dependencies, preserving the ordinary suite's offline cache-miss boundary.
 It also checks relocated loading, failure without the packed transitive dependency, and preservation of published output after compilation failure.
 The test covers member manifests, custom Cargo target directories, stale-file removal, and single-executable selection.
 The mangled Linux case uses a tightly packed ELF layout and checks that search-path padding is removed before packing.
@@ -299,6 +309,7 @@ The ELF symbol fixture uses the native C compiler and linker to exercise GNU-onl
 The default native Rust test exercises symbol renaming with both filename policies and rejects unknown keep-symbol names without replacing the previous distribution.
 It switches a populated cache from the default policy to `--no-fla` and back, checking actual compiler invocations and explicit symbol retention.
 The opt-out matrix exercises every feature disabled individually and all features disabled together, checking runtime behavior, packing/stripping state, exact reports, relocation, republication, and failed-publication preservation.
+On failure, the native harness retains the fixture directory and reports full process exit statuses so signal termination can be investigated against the original artifacts.
 The ignored [Base116 evaluator](../tests/evaluation/mod.rs) records behavior, full artifact inventories, and round-robin timing observations for six prepared variants.
 See the [evaluation](evaluation.md) for its procedure, measurements, and evidence limits.
 
