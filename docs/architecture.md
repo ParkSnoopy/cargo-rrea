@@ -6,6 +6,10 @@
 
 `cargo rrea build --release` and direct `cargo-rrea build --release` invocation select the same pipeline.
 Build flags belong to the `build` subcommand, not the root command.
+`-q` / `--quiet` suppresses Cargo progress and standalone compiler code-generation-unit names on either output stream.
+Repeating the flag (`-qq`, `-q -q`, or `--quiet --quiet`) also suppresses rrea status messages, including the report-path announcement and runtime-hint notes.
+Warnings, errors, executable paths on stdout, and report contents remain unchanged at both levels.
+Quiet levels do not change compiler flags, the obfuscation policy, or build-cache identity.
 `build` requires explicit `--release` (or `-r`); development and custom profiles are not supported.
 The default enables every implemented obfuscation feature and packs executables and required Rust shared libraries.
 
@@ -282,6 +286,7 @@ cargo fmt --check
 cargo test
 cargo test --test cli real_native_pipeline -- --ignored --nocapture
 cargo test --test cli real_obfuscation_opt_out_pipeline -- --ignored --nocapture
+cargo test --test cli real_quiet_pipeline -- --ignored --nocapture
 cargo build --release
 cargo run -- --help
 cargo clippy --all-targets

@@ -1,14 +1,25 @@
 //! Shared child-process and file-lock operations.
 
 use std::{
+    fmt,
     fs::{File, OpenOptions},
     io::{self, Write},
     path::Path,
     process::{Command, Output},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
+
+pub static HIDE_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+pub fn progress(message: fmt::Arguments<'_>) -> Result<()> {
+    if !HIDE_PROGRESS.load(Ordering::Relaxed) {
+        writeln!(io::stderr().lock(), "{message}")?;
+    }
+    Ok(())
+}
 
 pub fn checked_output(command: &mut Command) -> Result<Output> {
     let output = command
@@ -32,7 +43,7 @@ pub fn lock(path: &Path) -> Result<File> {
         .write(true)
         .open(path)?;
     if file.try_lock_exclusive().is_err() {
-        writeln!(io::stderr().lock(), "waiting for {}", path.display())?;
+        progress(format_args!("waiting for {}", path.display()))?;
         file.lock_exclusive()?;
     }
     Ok(file)

@@ -148,12 +148,133 @@ fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<
         "--locked",
         "--target",
         "--jobs",
+        "--quiet",
         "--keep-symbol",
     ]
     .into_iter()
     .chain(OPT_OUTS.iter().copied())
     {
         ensure!(help.contains(flag), "build help omits {flag}: {help}");
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "compiles native fixtures to verify quiet output and retained diagnostics"]
+fn real_quiet_pipeline_preserves_diagnostics_and_outputs() -> Result<()> {
+    let root = fixture()?;
+    let source_path = root.path().join("app/src/main.rs");
+    let source = fs::read_to_string(&source_path)?;
+    let mut command = cargo_cli()?;
+    command
+        .current_dir(root.path())
+        .args(["build", "--release", "--offline", "--no-upx"]);
+    if cfg!(windows) {
+        command.arg("--no-mangle-symbols");
+    }
+    let mut paths = Vec::new();
+    for (flags, cargo_progress, rrea_progress) in [
+        // The first quiet build also compiles host build scripts and procedural macros.
+        (&["-q"][..], false, true),
+        (&[][..], true, true),
+        (&["-qq"][..], false, false),
+        (&["--quiet"][..], false, true),
+        (&["-q", "-q"][..], false, false),
+        (&["--quiet", "--quiet"][..], false, false),
+    ] {
+        // Force target compilation at each output level instead of testing cached output.
+        fs::write(
+            &source_path,
+            format!("{source}\nfn quiet_warning_marker() {{}}\n// {flags:?}\n"),
+        )?;
+        let mut build = cli();
+        build
+            .current_dir(root.path())
+            .args(command.get_args())
+            .args(flags);
+        let output = success(&mut build)?;
+        let stderr = String::from_utf8(output.stderr)?;
+        ensure!(
+            stderr.contains("warning: function `quiet_warning_marker`"),
+            "warning lost: {stderr}"
+        );
+        for marker in ["Compiling", "Finished", "-cgu."] {
+            ensure!(
+                stderr.contains(marker) == cargo_progress,
+                "{flags:?}: incorrect {marker} output: {stderr}"
+            );
+        }
+        for marker in [
+            "building with",
+            "sanitizing",
+            "report:",
+            "retains Rust runtime hints",
+        ] {
+            ensure!(
+                stderr.contains(marker) == rrea_progress,
+                "{flags:?}: incorrect {marker} output: {stderr}"
+            );
+        }
+        let current: Vec<_> = String::from_utf8(output.stdout)?
+            .lines()
+            .map(PathBuf::from)
+            .collect();
+        ensure!(
+            current.len() == 2 && (paths.is_empty() || current == paths),
+            "quiet changed executable paths"
+        );
+        for path in &current {
+            success(&mut Command::new(path))?;
+        }
+        paths = current;
+    }
+    fs::write(&source_path, &source)?;
+    let clean = success(command.args(["-qq"]))?;
+    ensure!(
+        clean.stderr.is_empty(),
+        "double quiet emitted status: {}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    let before: Vec<_> = paths.iter().map(fs::read).collect::<std::io::Result<_>>()?;
+    fs::write(
+        &source_path,
+        format!("{source}\ncompile_error!(\"quiet_error_marker\");\n"),
+    )?;
+    verify_quiet_failure(root.path(), "quiet_error_marker")?;
+    fs::write(&source_path, source)?;
+    fs::write(
+        root.path().join("app/build.rs"),
+        "fn main() { eprintln!(\"quiet_child_error_marker\"); std::process::exit(17); }\n",
+    )?;
+    verify_quiet_failure(root.path(), "quiet_child_error_marker")?;
+    for (path, expected) in paths.iter().zip(before) {
+        ensure!(
+            fs::read(path)? == expected,
+            "failed quiet build changed published output"
+        );
+    }
+    Ok(())
+}
+
+fn verify_quiet_failure(root: &Path, diagnostic: &str) -> Result<()> {
+    for flag in ["-q", "-qq"] {
+        let mut command = cli();
+        command
+            .current_dir(root)
+            .args(["build", "--release", "--offline", "--no-upx", flag]);
+        if cfg!(windows) {
+            command.arg("--no-mangle-symbols");
+        }
+        let output = command.output()?;
+        let stderr = String::from_utf8(output.stderr)?;
+        ensure!(
+            !output.status.success() && output.stdout.is_empty(),
+            "quiet build accepted invalid source"
+        );
+        ensure!(
+            stderr.contains(diagnostic) && stderr.contains("Cargo build failed"),
+            "{flag} hid failure: {stderr}"
+        );
     }
     Ok(())
 }

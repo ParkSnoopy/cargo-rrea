@@ -16,6 +16,7 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     process::ExitCode,
+    sync::atomic::Ordering,
 };
 
 use anyhow::Result;
@@ -48,6 +49,9 @@ struct BuildOptions {
     target: Option<String>,
     #[arg(short = 'j', long, value_name = "N")]
     jobs: Option<std::num::NonZeroUsize>,
+    /// Hide Cargo progress and compiler module names; repeat to hide rrea status messages too.
+    #[arg(short = 'q', long, action = clap::ArgAction::Count)]
+    quiet: u8,
     #[command(flatten)]
     obfuscation: obfuscation::Obfuscation,
     /// Preserve an exact Rust dynamic symbol used by external consumers or runtime lookup.
@@ -109,7 +113,10 @@ fn run() -> Result<()> {
     }
     let cli = Cli::parse_from(args);
     match cli.command {
-        Action::Build(options) => build::run(&options),
+        Action::Build(options) => {
+            support::HIDE_PROGRESS.store(options.quiet >= 2, Ordering::Relaxed);
+            build::run(&options)
+        }
     }
 }
 

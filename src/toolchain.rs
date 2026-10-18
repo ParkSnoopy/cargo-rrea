@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::support::{checked_output, lock};
+use crate::support::{checked_output, lock, progress};
 
 const COMPILER_REPO: &str = "ParkSnoopy/rust_llvm-arkari_ollvm";
 const COMPILER_TAG: &str = "R1991-L2311";
@@ -156,7 +156,7 @@ fn install_compiler(root: &Path, host: &str, offline: bool) -> Result<(PathBuf, 
         !offline,
         "{kind} {COMPILER_TAG} is not cached; offline mode forbids downloading it"
     );
-    writeln!(io::stderr().lock(), "resolving {repository} release")?;
+    progress(format_args!("resolving {repository} release"))?;
     let response = tempfile::NamedTempFile::new_in(root)?;
     download(
         &format!("https://api.github.com/repos/{repository}/releases/tags/{COMPILER_TAG}"),
@@ -192,7 +192,7 @@ fn install_compiler(root: &Path, host: &str, offline: bool) -> Result<(PathBuf, 
         "unexpected asset download URL"
     );
     let archive = tempfile::NamedTempFile::new_in(root)?;
-    writeln!(io::stderr().lock(), "downloading {} {}", kind, record.tag)?;
+    progress(format_args!("downloading {} {}", kind, record.tag))?;
     download(&record.url(), archive.path(), MAX_ARCHIVE)?;
     ensure!(
         fs::metadata(archive.path())?.len() == record.bytes,

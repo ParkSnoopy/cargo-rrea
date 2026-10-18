@@ -2,9 +2,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     fs::{self, File, OpenOptions},
-    io::{self, BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
 };
 
 use anyhow::{Context, Result, ensure};
@@ -20,6 +21,7 @@ use crate::{
     mangle,
     obfuscation::{Feature, Obfuscation},
     project,
+    support::progress,
     symbols,
     tools,
 };
@@ -47,16 +49,15 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         .context("compiler has no sysroot")?;
     let mut prepared = prepare_build(&root, &metadata, options, &tools, sysroot, target)?;
     let log = prepared.directory.join("cargo.jsonl");
-    writeln!(
-        io::stderr().lock(),
+    progress(format_args!(
         "building with {} (panic={PANIC_STRATEGY}); log: {}",
         tools.compiler_release.tag,
         log.display()
-    )?;
+    ))?;
     let CollectedArtifacts {
         mut artifacts,
         active_rlibs,
-    } = collect_artifacts(&mut prepared.command, &metadata, &log)?;
+    } = collect_artifacts(&mut prepared.command, &metadata, &log, options.quiet > 0)?;
     let staging = tempfile::Builder::new()
         .prefix(".staging-")
         .tempdir_in(&root)?;
@@ -148,11 +149,10 @@ fn print_distribution(
     for executable in executables {
         writeln!(stdout, "{}", distribution.join(executable).display())?;
     }
-    writeln!(
-        io::stderr().lock(),
+    progress(format_args!(
         "report: {}",
         destination.join("build.json").display()
-    )?;
+    ))?;
     Ok(())
 }
 
@@ -358,19 +358,18 @@ fn prepare_artifacts(
     for (relative, original) in artifacts {
         let name = relative.to_str().context("artifact name is not UTF-8")?;
         let relative = Path::new(names.get(name).map_or(name, String::as_str));
-        writeln!(io::stderr().lock(), "sanitizing {}", relative.display())?;
+        progress(format_args!("sanitizing {}", relative.display()))?;
         let clean = staging.join(relative);
         let strip = obfuscation.enabled(Feature::Strip);
         let unpacked_audit = sanitize(&original, &clean, tools, names, symbols, prohibited, strip)?;
         let unpacked_sha256 = tools::sha256(&clean)?;
         let unpacked_bytes = fs::metadata(&clean)?.len();
         if !unpacked_audit.rust_string_hints.is_empty() {
-            writeln!(
-                io::stderr().lock(),
+            progress(format_args!(
                 "note: {} retains Rust runtime hints (not a stripping failure): {}; details in build report",
                 relative.display(),
                 unpacked_audit.rust_string_hints.join(", ")
-            )?;
+            ))?;
         }
         let packed_audit = obfuscation
             .enabled(Feature::Upx)
@@ -407,7 +406,7 @@ fn pack_artifact(
     prohibited: &[&Path],
     strip: bool,
 ) -> Result<audit::PackedInspection> {
-    writeln!(io::stderr().lock(), "packing {}", clean.display())?;
+    progress(format_args!("packing {}", clean.display()))?;
     let packed = clean.with_extension("rrea-packed");
     let mut pack = Command::new(&tools.upx);
     pack.args(["--no-env", "--best", "--overlay=copy"]);
@@ -620,6 +619,7 @@ fn build_arguments(command: &mut Command, options: &BuildOptions) {
     }
     for (enabled, flag) in [
         (options.release, "--release"),
+        (options.quiet > 0, "--quiet"),
         (options.selection.bins, "--bins"),
         (options.selection.workspace, "--workspace"),
         (options.features.all, "--all-features"),
@@ -646,13 +646,23 @@ fn collect_artifacts(
     command: &mut Command,
     metadata: &Metadata,
     log: &Path,
+    quiet: bool,
 ) -> Result<CollectedArtifacts> {
+    let mut log_file = File::create(log)?;
     let mut child = command
         .stdout(Stdio::piped())
+        .stderr(if quiet {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        })
         .spawn()
         .context("cannot start Cargo build")?;
     let stdout = child.stdout.take().context("Cargo stdout is not piped")?;
-    let mut log_file = File::create(log)?;
+    let stderr = child
+        .stderr
+        .take()
+        .map(|stderr| thread::spawn(move || filter_compiler_output(stderr, io::stderr())));
     let mut artifacts = BTreeMap::new();
     let mut active_rlibs = BTreeSet::new();
     let mut build_finished = false;
@@ -662,7 +672,9 @@ fn collect_artifacts(
             let line = line?;
             writeln!(log_file, "{line}")?;
             let Ok(message) = serde_json::from_str::<Message>(&line) else {
-                writeln!(io::stderr().lock(), "{line}")?;
+                if !quiet || !compiler_module_name(&line) {
+                    writeln!(io::stderr().lock(), "{line}")?;
+                }
                 return Ok(());
             };
             match message {
@@ -713,6 +725,11 @@ fn collect_artifacts(
         }
     }
     let status = child.wait()?;
+    if let Some(stderr) = stderr {
+        stderr
+            .join()
+            .map_err(|_| anyhow::anyhow!("compiler output reader panicked"))??;
+    }
     if let Some(error) = read_error {
         return Err(error);
     }
@@ -729,6 +746,30 @@ fn collect_artifacts(
         artifacts,
         active_rlibs,
     })
+}
+
+fn compiler_module_name(line: &str) -> bool {
+    let Some((name, unit)) = line.trim_end_matches(['\r', '\n']).rsplit_once("-cgu.") else {
+        return false;
+    };
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        && !unit.is_empty()
+        && unit.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn filter_compiler_output(input: impl Read, mut output: impl Write) -> Result<()> {
+    let mut input = BufReader::new(input);
+    let mut line = Vec::new();
+    while input.read_until(b'\n', &mut line)? != 0 {
+        if !std::str::from_utf8(&line).is_ok_and(compiler_module_name) {
+            output.write_all(&line)?;
+        }
+        line.clear();
+    }
+    Ok(())
 }
 
 pub fn rustc_wrapper() -> Result<()> {
