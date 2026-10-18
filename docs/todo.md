@@ -70,7 +70,8 @@ Neither filename mangling nor static-symbol stripping addresses all of these lea
 - [ ] Remove avoidable source paths and implementation strings at compilation or generation time, investigating pass coverage where strings remain.
   Do not blindly overwrite loaded data, public CLI text, or required diagnostics.
   Local absolute paths and removable metadata are rejected by the default policy.
-  Remapped dependency paths, core/alloc diagnostics, and precompiled standard-library strings remain visible.
+  The pinned compiler encrypts eligible Rust byte strings, with runtime parity and loaded-segment plaintext checks under default and opt-out policies.
+  Precompiled standard-library strings and unsupported uses remain outside that coverage; concurrent first-use initialization remains an upstream risk.
   Unreferenced ELF `rust_metadata_*` exports are now removed together with their non-loaded `.rustc` payload instead of leaving dangling section references.
 
 ### Acceptance gates

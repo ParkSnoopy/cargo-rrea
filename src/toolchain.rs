@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use crate::support::{checked_output, lock};
 
 const COMPILER_REPO: &str = "ParkSnoopy/rust_llvm-arkari_ollvm";
+const COMPILER_TAG: &str = "R1991-L2311";
 
 const MAX_ARCHIVE: u64 = 1024 * 1024 * 1024;
 const MAX_EXTRACTED: u64 = 4 * MAX_ARCHIVE;
@@ -147,21 +148,26 @@ fn install_compiler(root: &Path, host: &str, offline: bool) -> Result<(PathBuf, 
             "cached {kind} is missing: {}",
             destination.display()
         );
-        return Ok((destination, record));
+        if record.tag == COMPILER_TAG {
+            return Ok((destination, record));
+        }
     }
     ensure!(
         !offline,
-        "{kind} is not cached; offline mode forbids downloading it"
+        "{kind} {COMPILER_TAG} is not cached; offline mode forbids downloading it"
     );
     writeln!(io::stderr().lock(), "resolving {repository} release")?;
     let response = tempfile::NamedTempFile::new_in(root)?;
     download(
-        &format!("https://api.github.com/repos/{repository}/releases/latest"),
+        &format!("https://api.github.com/repos/{repository}/releases/tags/{COMPILER_TAG}"),
         response.path(),
         4 * 1024 * 1024,
     )?;
     let release: Release = serde_json::from_slice(&fs::read(response.path())?)?;
-    ensure!(safe_name(&release.tag_name), "invalid release tag");
+    ensure!(
+        release.tag_name == COMPILER_TAG,
+        "unexpected compiler release"
+    );
     let name = format!("{host}.zip");
     let asset = release
         .assets

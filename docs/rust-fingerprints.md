@@ -20,7 +20,7 @@ The report's imports/exports and section inventories, plus offset-bearing string
 | --- | --- |
 | Local workspace, Cargo cache, compiler, build directories | Compiler path remapping and exact-path rejection prevent local absolute-path leakage. Remapped relative package/source identities can still remain. |
 | Application CLI and errors | Help, encoding wrappers, public output, and error messages are behavior. Keep them unless the application's specification changes. |
-| Dependency and monomorphized core/alloc code | Recovered binaries can contain `library/core/src/...`, `library/alloc/src/...`, and `/deps/registry/src/...`. Enabled obfuscation passes do not establish complete string coverage. |
+| Dependency and monomorphized core/alloc code | CSE encrypts eligible length-delimited constant byte arrays, including Rust strings, before indirect-global rewriting. Unsupported uses and optimizer-generated immediates can still retain plaintext. |
 | Precompiled standard library | Its runtime diagnostics and Rust symbols survive stripping. It was not rebuilt with the target LLVM passes. |
 | Dynamic symbol tables | Eligible names change only under the explicit closed-bundle policy. Versioned, weak, ambiguous, TLS/IFUNC, external, and explicitly retained names remain. |
 | Compiler metadata exports | Non-loaded `.rustc` objects named `rust_metadata_*` are removed before stripping, after checking the complete bundle for imports and relocation references. Their names appear separately in `removed_metadata_symbols`. |
@@ -28,7 +28,8 @@ The report's imports/exports and section inventories, plus offset-bearing string
 
 Do not silently add `-Zfmt-debug=none`, disable panic/unwind, alter caller-location semantics, or overwrite string bytes to reduce these counts.
 Those changes can break observable behavior, invalidate pointers/lengths, or destroy diagnostics while leaving other fingerprints intact.
-A future compile-time path/string policy needs explicit semantics, pinned compiler support, and representative diagnostic tests.
+CSE preserves string lengths, embedded NULs, UTF-8, and observable diagnostics; `--no-cse` disables it independently of packing.
+The upstream lazy initializer is not synchronized for concurrent first use; single-threaded fixtures do not establish race-free initialization.
 Rebuilding the standard library would also need a pinned source/toolchain workflow and its own behavior/performance evidence.
 
 ## Closed-bundle symbol map

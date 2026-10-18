@@ -6,8 +6,8 @@ extern crate alloc;
 
 use alloc::{format, string::String};
 
-// Retain read-only data when testing packing without separate code segments.
-static OFFSETS: [f64; 2048] = [0.0625; 2048];
+// Zero-filled padding stays read-only rather than becoming encrypted writable data.
+static OFFSETS: [f64; 2048] = [0.0; 2048];
 
 #[derive(Debug)]
 enum Value {

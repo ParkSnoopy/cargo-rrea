@@ -164,6 +164,10 @@ fn cargo_bootstrap_prepares_a_runnable_matching_toolchain() -> Result<()> {
     let record: serde_json::Value =
         serde_json::from_slice(&fs::read(cache.join("compiler.json"))?)?;
     let tag = record["tag"].as_str().context("missing compiler tag")?;
+    ensure!(
+        tag == "R1991-L2311",
+        "bootstrap reused an unsupported compiler"
+    );
     let toolchain = cache.join(format!("compiler-{tag}/stage1"));
     let host = cache
         .file_name()
@@ -242,17 +246,41 @@ fn offline_cache_miss_and_unsupported_targets_do_not_publish() -> Result<()> {
         .path()
         .join(format!("cargo-rrea{}", std::env::consts::EXE_SUFFIX));
     fs::copy(env!("CARGO_BIN_EXE_cargo-rrea"), &detached)?;
-    let output = Command::new(detached)
+    let mut command = Command::new(detached);
+    command
         .current_dir(root.path())
         .args(["build", "--release", "--offline"])
         .args(cfg!(windows).then_some("--no-mangle-symbols"))
         .env("XDG_CACHE_HOME", cache.path())
-        .env("LOCALAPPDATA", cache.path())
-        .output()?;
+        .env("LOCALAPPDATA", cache.path());
+    let output = command.output()?;
     ensure!(!output.status.success(), "offline cache miss succeeded");
     ensure!(
         String::from_utf8_lossy(&output.stderr).contains("not cached"),
         "offline miss did not report a missing cache"
+    );
+    let bootstrap = Path::new(env!("RREA_DOWNLOADS"));
+    let stale_cache = cache
+        .path()
+        .join("cargo-rrea")
+        .join(bootstrap.file_name().context("missing host")?);
+    fs::create_dir_all(stale_cache.join("compiler-R1990-L2311"))?;
+    let mut stale: serde_json::Value =
+        serde_json::from_slice(&fs::read(bootstrap.join("compiler.json"))?)?;
+    stale["tag"] = "R1990-L2311".into();
+    let stale = serde_json::to_vec(&stale)?;
+    let record = stale_cache.join("compiler.json");
+    fs::write(&record, &stale)?;
+    let output = command.output()?;
+    ensure!(
+        !output.status.success()
+            && String::from_utf8_lossy(&output.stderr).contains("R1991-L2311 is not cached"),
+        "offline stale cache was not rejected: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    ensure!(
+        fs::read(record)? == stale,
+        "offline acquisition changed the stale record"
     );
     ensure!(
         distributions(&root.path().join("target"))?.is_empty(),
@@ -973,6 +1001,22 @@ fn verify_packing(
         );
         data
     };
+    if original_exports(artifact, report)?.contains("fixture_logic") {
+        use object::{Object, ObjectSegment};
+        // RREA: scan runtime bytes, not optional compiler/debug metadata.
+        let marker = "Rust string\0with NUL:文字".as_bytes();
+        let mut plaintext = false;
+        for segment in object::File::parse(unpacked.as_slice())?.segments() {
+            plaintext |= segment
+                .data()?
+                .windows(marker.len())
+                .any(|bytes| bytes == marker);
+        }
+        ensure!(
+            plaintext == disabled.iter().any(|arg| arg == "--no-cse"),
+            "Rust string encryption does not match the selected policy: {path:?}"
+        );
+    }
     if executable {
         use object::Object;
         let file = object::File::parse(unpacked.as_slice())?;

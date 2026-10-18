@@ -2,8 +2,8 @@
 
 #![no_std]
 
-// Keep observable read-only data in the tightly linked, packed shared library.
-static LOOKUP: [u32; 4096] = [0x1928_3746; 4096];
+// Zero-filled padding stays read-only rather than becoming encrypted writable data.
+static LOOKUP: [u32; 4096] = [0; 4096];
 
 /// Calculate a deterministic value with runtime control flow.
 #[inline(never)]

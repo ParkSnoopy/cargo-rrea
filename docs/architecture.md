@@ -75,10 +75,11 @@ A custom Cargo target directory uses the same `downloads/<host>/` layout.
 Development, test, and release profiles share this toolchain cache.
 No manual compiler download is required.
 
-The shared [toolchain module](../src/toolchain.rs) resolves the upstream release through the GitHub API, validates the expected host asset and HTTPS URL, and checks the archive size and SHA-256 before bounded ZIP extraction.
+The shared [toolchain module](../src/toolchain.rs) pins the compiler release with Rust byte-string support, resolves that tag through the GitHub API, and checks the expected host asset, HTTPS URL, archive size, and SHA-256 before bounded ZIP extraction.
 Archive traversal, links, and special files are rejected.
 Installation publishes the completed compiler directory before atomically publishing its release record.
-A file lock serializes concurrent acquisition, and a cached release record avoids re-querying the moving latest release.
+A file lock serializes concurrent acquisition, and a matching cached release avoids network access.
+An older cached release is replaced only after the pinned compiler is downloaded and verified; offline acquisition rejects a mismatched release without changing the cache record.
 Cached records and the expected compiler/sysroot layout are checked; invalid or incomplete installations fail rather than selecting another compiler.
 The downloaded compiler must run and report the matching host before bootstrap succeeds.
 The matching `stage1/lib/rustlib/<host>/bin/llvm-objcopy` must also exist and run.
@@ -309,6 +310,7 @@ The ELF symbol fixture uses the native C compiler and linker to exercise GNU-onl
 The default native Rust test exercises symbol renaming with both filename policies and rejects unknown keep-symbol names without replacing the previous distribution.
 It switches a populated cache from the default policy to `--no-fla` and back, checking actual compiler invocations and explicit symbol retention.
 The opt-out matrix exercises every feature disabled individually and all features disabled together, checking runtime behavior, packing/stripping state, exact reports, relocation, republication, and failed-publication preservation.
+It checks a length-delimited UTF-8 string with an embedded NUL in loaded segments after unpacking, requiring plaintext only when CSE is disabled.
 On failure, the native harness retains the fixture directory and reports full process exit statuses so signal termination can be investigated against the original artifacts.
 The ignored [Base116 evaluator](../tests/evaluation/mod.rs) records behavior, full artifact inventories, and round-robin timing observations for six prepared variants.
 See the [evaluation](evaluation.md) for its procedure, measurements, and evidence limits.
