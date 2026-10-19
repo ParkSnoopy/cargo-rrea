@@ -30,7 +30,9 @@ cargo rrea build --release
 ```
 
 `build --release` enables all implemented obfuscation features by default, including library and ELF Rust symbol mangling.  
-Individual `--no-<feature>` switches disable only that feature, such as `--no-fla`, `--no-mangle-symbols`, or `--no-upx`.  
+Individual `--no-<feature>` switches disable only that feature, such as `--no-fla` or `--no-upx`.  
+`--no-mangle symbol` and `--no-mangle library` disable the corresponding mangling policies independently.  
+Bare `--no-mangle` disables both.  
 The complete [feature contract](docs/architecture.md#obfuscation-policy) defines pass selection, stripping, path remapping, and packing.  
 Stripping temporarily disables debug information and removes metadata without editing `Cargo.toml`; `--no-strip` retains the project's debug/strip settings.  
 `build` requires `--release` (or `-r`); development profiles are not supported.  
@@ -38,7 +40,8 @@ Release builds automatically use `panic = "unwind"` to match the shared runtime,
 This changes panic behavior without editing `Cargo.toml`; no environment-variable prefix is needed.  
 The default follows the [closed-bundle symbol contract](docs/rust-fingerprints.md#closed-bundle-symbol-map).  
 Externally consumed or runtime-looked-up Rust names require `--keep-symbol NAME`, unless symbol mangling is disabled.  
-Windows currently requires `--no-mangle-symbols` and, when packing, `--no-opaque`; unsupported default features fail before building rather than silently weakening protection.  
+Windows currently requires symbol mangling disabled with `--no-mangle symbol` or bare `--no-mangle`, plus `--no-opaque` when packing.  
+Unsupported default features fail before building rather than silently weakening protection.  
 
 Select a package and executable, or build with an already cached toolchain offline:
 

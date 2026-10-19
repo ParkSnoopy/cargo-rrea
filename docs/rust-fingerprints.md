@@ -4,9 +4,10 @@
 
 Library filename mangling and Rust symbol renaming are independent policies.
 Both are enabled by default under the [maximum-feature policy](architecture.md#obfuscation-policy).
-`--no-mangle-library` and `--no-mangle-symbols` disable them independently.
+`--no-mangle library` and `--no-mangle symbol` disable them independently.
+Bare `--no-mangle` disables both.
 Symbol renaming covers eligible ELF64 Rust dynamic symbols across the reachable bundle using [symbol planning](../src/symbols.rs) and the existing [metadata writer](../src/mangle.rs).
-Windows requires explicit `--no-mangle-symbols`; otherwise the unsupported feature fails before project builds or tool acquisition.
+Windows requires `--no-mangle symbol` or bare `--no-mangle`; otherwise the unsupported feature fails before project builds or tool acquisition.
 The historical [evaluation](evaluation.md) predates symbol renaming and found the same exported-symbol multiset with and without filename mangling.
 
 The default pipeline rejects retained static/debug metadata, prohibited local build paths, undeclared runtime import/export changes, and malformed packing metadata.
@@ -35,7 +36,7 @@ Rebuilding the standard library would also need a pinned source/toolchain workfl
 ## Closed-bundle symbol map
 
 The default build contract requires all selected Rust interfaces to be internal to the bundle except names explicitly preserved with repeated `--keep-symbol NAME` arguments.
-`--no-mangle-symbols` opts out of this contract, and cannot be combined with `--keep-symbol`.
+`--no-mangle symbol` and bare `--no-mangle` opt out of this contract and cannot be combined with `--keep-symbol`.
 This includes runtime lookup, plugins, external consumers, and intentional Rust-symbol interposition.
 The tool cannot infer those consumers from the static dependency graph.
 Keep-symbol values must identify existing Rust-mangled dynamic names; misspellings fail before publication.

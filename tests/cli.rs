@@ -12,20 +12,20 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 
-const OPT_OUTS: &[&str] = &[
-    "--no-indbr",
-    "--no-icall",
-    "--no-indgv",
-    "--no-cse",
-    "--no-fla",
-    "--no-cie",
-    "--no-cfe",
-    "--no-mangle-library",
-    "--no-mangle-symbols",
-    "--no-upx",
-    "--no-opaque",
-    "--no-strip",
-    "--no-remap-paths",
+const OPT_OUTS: &[(&[&str], &str)] = &[
+    (&["--no-indbr"], "indbr"),
+    (&["--no-icall"], "icall"),
+    (&["--no-indgv"], "indgv"),
+    (&["--no-cse"], "cse"),
+    (&["--no-fla"], "fla"),
+    (&["--no-cie"], "cie"),
+    (&["--no-cfe"], "cfe"),
+    (&["--no-mangle", "library"], "mangle-library"),
+    (&["--no-mangle", "symbol"], "mangle-symbols"),
+    (&["--no-upx"], "upx"),
+    (&["--no-opaque"], "opaque"),
+    (&["--no-strip"], "strip"),
+    (&["--no-remap-paths"], "remap-paths"),
 ];
 
 fn cli() -> Command {
@@ -114,15 +114,13 @@ fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<
         vec!["build", "--release", "--bin", "fixture", "--bins"],
         vec!["build", "--release", "--exclude", "fixture-app"],
         vec!["build", "--release", "--mangle-library"],
-        vec!["build", "--no-mangle-library"],
+        vec!["build", "--release", "--no-mangle-library"],
+        vec!["build", "--release", "--no-mangle-symbols"],
+        vec!["build", "--release", "--no-mangle-symbol"],
         vec!["build", "--release", "--mangle-symbols"],
-        vec![
-            "build",
-            "--release",
-            "--no-mangle-symbols",
-            "--keep-symbol",
-            "missing",
-        ],
+        vec!["build", "--release", "--no-mangle", "unknown"],
+        vec!["build", "--release", "--no-mangle="],
+        vec!["build", "--release", "--no-mangle=symbol,unknown"],
     ] {
         let output = cli().args(&args).output()?;
         ensure!(
@@ -153,9 +151,69 @@ fn build_subcommand_exposes_options_and_rejects_invalid_invocations() -> Result<
         "--keep-symbol",
     ]
     .into_iter()
-    .chain(OPT_OUTS.iter().copied())
+    .chain(OPT_OUTS.iter().map(|(flags, _)| flags[0]))
     {
         ensure!(help.contains(flag), "build help omits {flag}: {help}");
+    }
+    Ok(())
+}
+
+#[test]
+fn mangling_selectors_accept_optional_values_and_preserve_conflicts() -> Result<()> {
+    for (args, conflict) in [
+        (&[][..], false),
+        (&["--no-mangle"][..], false),
+        (&["--no-mangle", "symbol"][..], false),
+        (&["--no-mangle", "library"][..], false),
+        (&["--no-mangle=symbol"][..], false),
+        (&["--no-mangle=library,symbol"][..], false),
+        (
+            &["--no-mangle", "library", "--no-mangle", "symbol"][..],
+            false,
+        ),
+        (&["--no-mangle", "--no-mangle", "library"][..], false),
+        (
+            &["--no-mangle", "library", "--keep-symbol", "kept"][..],
+            false,
+        ),
+        (&["--no-mangle", "--keep-symbol", "kept"][..], true),
+        (
+            &["--no-mangle", "symbol", "--keep-symbol", "kept"][..],
+            true,
+        ),
+        (
+            &["--no-mangle=library,symbol", "--keep-symbol", "kept"][..],
+            true,
+        ),
+        (
+            &[
+                "--keep-symbol",
+                "kept",
+                "--no-mangle",
+                "library",
+                "--no-mangle",
+                "symbol",
+            ][..],
+            true,
+        ),
+    ] {
+        // A valid parse reaches target validation, before metadata discovery or downloads.
+        let output = cli()
+            .args(["build", "--target", "unsupported"])
+            .args(args)
+            .arg("--release")
+            .output()?;
+        let stderr = String::from_utf8(output.stderr)?;
+        ensure!(
+            output.status.code() == Some(if conflict { 2 } else { 1 }),
+            "unexpected selector result for {args:?}: {stderr}"
+        );
+        let expected = if conflict {
+            "--keep-symbol cannot be used"
+        } else {
+            "cross-compilation is not supported"
+        };
+        ensure!(stderr.contains(expected), "{args:?}: {stderr}");
     }
     Ok(())
 }
@@ -171,7 +229,7 @@ fn real_quiet_pipeline_preserves_diagnostics_and_outputs() -> Result<()> {
         .current_dir(root.path())
         .args(["build", "--release", "--offline", "--no-upx"]);
     if cfg!(windows) {
-        command.arg("--no-mangle-symbols");
+        command.args(["--no-mangle", "symbol"]);
     }
     let mut paths = Vec::new();
     for (flags, cargo_progress, rrea_progress) in [
@@ -264,7 +322,7 @@ fn verify_quiet_failure(root: &Path, diagnostic: &str) -> Result<()> {
             .current_dir(root)
             .args(["build", "--release", "--offline", "--no-upx", flag]);
         if cfg!(windows) {
-            command.arg("--no-mangle-symbols");
+            command.args(["--no-mangle", "symbol"]);
         }
         let output = command.output()?;
         let stderr = String::from_utf8(output.stderr)?;
@@ -372,7 +430,7 @@ fn offline_cache_miss_and_unsupported_targets_do_not_publish() -> Result<()> {
     command
         .current_dir(root.path())
         .args(["build", "--release", "--offline"])
-        .args(cfg!(windows).then_some("--no-mangle-symbols"))
+        .args(cfg!(windows).then_some("--no-mangle=symbol"))
         .args(cfg!(windows).then_some("--no-opaque"))
         .env("XDG_CACHE_HOME", cache.path())
         .env("LOCALAPPDATA", cache.path());
@@ -445,28 +503,46 @@ fn distributions(target: &Path) -> Result<Vec<std::path::PathBuf>> {
 #[test]
 #[ignore = "compiles and runs owned fixtures with the bootstrapped compiler and bundled UPX"]
 fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> Result<()> {
-    for selection in [
-        &[][..],
-        &[
-            "--package",
-            "fixture-app",
-            "--bins",
-            "--locked",
-            "--offline",
-            "--manifest-path",
-            "app/Cargo.toml",
-        ],
-        &["--no-mangle-library"],
-        &["--no-opaque"],
-    ] {
+    let selections: &[(&[&str], &[&str])] = &[
+        (&[], &[]),
+        (
+            &[
+                "--package",
+                "fixture-app",
+                "--bins",
+                "--locked",
+                "--offline",
+                "--manifest-path",
+                "app/Cargo.toml",
+            ],
+            &[],
+        ),
+        (&["--no-mangle", "library"], &["mangle-library"]),
+        (&["--no-mangle"], &["mangle-library", "mangle-symbols"]),
+        (
+            &["--no-mangle=library,symbol"],
+            &["mangle-library", "mangle-symbols"],
+        ),
+        (
+            &["--no-mangle", "library", "--no-mangle", "symbol"],
+            &["mangle-library", "mangle-symbols"],
+        ),
+        (&["--no-opaque"], &["opaque"]),
+    ];
+    for &(selection, disabled) in selections {
         let mut selection = selection.to_vec();
+        let mut disabled = disabled.to_vec();
         if cfg!(windows) {
-            selection.push("--no-mangle-symbols");
-            if !selection.contains(&"--no-opaque") {
+            if !disabled.contains(&"mangle-symbols") {
+                selection.extend(["--no-mangle", "symbol"]);
+                disabled.push("mangle-symbols");
+            }
+            if !disabled.contains(&"opaque") {
                 selection.push("--no-opaque");
+                disabled.push("opaque");
             }
         }
-        verify_native_pipeline(&selection)
+        verify_native_pipeline(&selection, &disabled)
             .with_context(|| format!("native build selection: {selection:?}"))?;
     }
     Ok(())
@@ -476,18 +552,23 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
 #[test]
 #[ignore = "runs every obfuscation opt-out and the all-disabled policy through the native pipeline"]
 fn real_obfuscation_opt_out_pipeline_preserves_behavior() -> Result<()> {
-    for flag in OPT_OUTS {
-        verify_native_pipeline(&[flag]).with_context(|| format!("opt-out {flag}"))?;
-        writeln!(io::stderr().lock(), "verified opt-out {flag}")?;
+    for (flags, feature) in OPT_OUTS {
+        verify_native_pipeline(flags, &[feature]).with_context(|| format!("opt-out {flags:?}"))?;
+        writeln!(io::stderr().lock(), "verified opt-out {flags:?}")?;
     }
-    verify_native_pipeline(OPT_OUTS)?;
+    let flags: Vec<_> = OPT_OUTS
+        .iter()
+        .flat_map(|(args, _)| args.iter().copied())
+        .collect();
+    let disabled: Vec<_> = OPT_OUTS.iter().map(|(_, feature)| *feature).collect();
+    verify_native_pipeline(&flags, &disabled)?;
     writeln!(io::stderr().lock(), "verified all-disabled policy")?;
     Ok(())
 }
 
-fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
+fn verify_native_pipeline(selection: &[&str], disabled: &[&str]) -> Result<()> {
     let root = fixture()?;
-    verify_native_fixture(&root, selection).map_err(|error| {
+    verify_native_fixture(&root, selection, disabled).map_err(|error| {
         error.context(format!(
             "failed fixture retained at {}",
             root.keep().display()
@@ -495,7 +576,11 @@ fn verify_native_pipeline(selection: &[&str]) -> Result<()> {
     })
 }
 
-fn verify_native_fixture(root: &tempfile::TempDir, selection: &[&str]) -> Result<()> {
+fn verify_native_fixture(
+    root: &tempfile::TempDir,
+    selection: &[&str],
+    disabled: &[&str],
+) -> Result<()> {
     let manifest = fs::read(root.path().join("Cargo.toml"))?;
     let member = fs::read(root.path().join("app/Cargo.toml"))?;
     let target = root.path().join(if selection.is_empty() {
@@ -553,16 +638,13 @@ fn verify_native_fixture(root: &tempfile::TempDir, selection: &[&str]) -> Result
     );
     verify_behavior(&baseline, &paths)?;
     let distribution = verify_distribution(&target, &dist, &paths)?;
-    verify_symbol_report(
-        &distribution.report,
-        !selection.contains(&"--no-mangle-symbols"),
-    )?;
+    verify_symbol_report(&distribution.report, !disabled.contains(&"mangle-symbols"))?;
     ensure!(
-        distribution.report["mangle_library"] == !selection.contains(&"--no-mangle-library"),
+        distribution.report["mangle_library"] == !disabled.contains(&"mangle-library"),
         "incorrect mangling report"
     );
     verify_relocation(root.path(), &distribution, &paths)?;
-    verify_obfuscation(&distribution, selection)?;
+    verify_obfuscation(&distribution, disabled)?;
     verify_republication(
         &manifest_directory,
         &target,
@@ -600,7 +682,7 @@ fn verify_policy_switch(
         .keys()
         .find(|name| name.contains("fixture_logic"))
         .context("missing fixture Rust symbol")?;
-    for selection in [&["--no-fla"][..], &[]] {
+    for (selection, disabled) in [(&["--no-fla"][..], &["fla"][..]), (&[], &[])] {
         let before = distributions(target)?;
         success(
             cargo_cli()?
@@ -637,23 +719,20 @@ fn verify_policy_switch(
                 artifacts: original.artifacts.clone(),
                 report,
             },
-            selection,
+            disabled,
         )?;
         verify_behavior(baseline, paths)?;
     }
     Ok(())
 }
 
-fn verify_obfuscation(distribution: &Distribution, selection: &[&str]) -> Result<()> {
+fn verify_obfuscation(distribution: &Distribution, disabled: &[&str]) -> Result<()> {
     let report = &distribution.report;
     ensure!(
         report["panic_strategy"] == "unwind",
         "incorrect shared-runtime panic strategy"
     );
-    let disabled: BTreeSet<_> = selection
-        .iter()
-        .filter_map(|flag| flag.strip_prefix("--no-"))
-        .collect();
+    let disabled: BTreeSet<_> = disabled.iter().copied().collect();
     let reported: BTreeSet<_> = report["disabled_obfuscation"]
         .as_array()
         .context("missing disabled features")?
@@ -803,10 +882,11 @@ fn policy_arguments(report: &serde_json::Value) -> Result<Vec<String>> {
         .context("missing disabled features")?
         .iter()
         .map(|name| {
-            Ok(format!(
-                "--no-{}",
-                name.as_str().context("invalid feature")?
-            ))
+            Ok(match name.as_str().context("invalid feature")? {
+                "mangle-symbols" => "--no-mangle=symbol".to_owned(),
+                "mangle-library" => "--no-mangle=library".to_owned(),
+                feature => format!("--no-{feature}"),
+            })
         })
         .collect()
 }

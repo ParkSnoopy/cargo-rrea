@@ -171,7 +171,7 @@ fn check_target(options: &BuildOptions) -> Result<&'static str> {
     ensure!(
         !options.obfuscation.enabled(Feature::MangleSymbols)
             || target == "x86_64-unknown-linux-gnu",
-        "symbol mangling is supported only for Linux ELF64 closed bundles; use --no-mangle-symbols on this target"
+        "symbol mangling is supported only for Linux ELF64 closed bundles; use --no-mangle symbol on this target"
     );
     ensure!(
         !options.obfuscation.enabled(Feature::Upx)

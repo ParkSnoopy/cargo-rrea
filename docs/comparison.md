@@ -11,7 +11,7 @@ The original reports are not included in the maintained documentation.
 Section references below identify evidence in those reports.
 This comparison does not rerun their binary analysis or independently validate their tool results.
 The reports and screenshots describe the earlier header-masked build, not a new assessment of the current patched packer.
-The historical `--mangle-library` flag is no longer needed or accepted: current builds mangle names by default and accept `--no-mangle-library` to opt out.
+The historical `--mangle-library` flag is no longer needed or accepted: current builds mangle names by default and accept `--no-mangle library` to opt out of library filename mangling.
 The separate [native evaluation](evaluation.md) tests the current implementation and records hashes, behavior, timings, and analysis failures.
 
 ## What the reports recovered

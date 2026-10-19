@@ -24,7 +24,7 @@ Its archive SHA-256 was verified as `ddac49f903da9d5bac833e5cc79395098b9c33cfd32
 | stripped | Baseline plus `llvm-objcopy --strip-all --remove-section=.comment` | 1 | 889,736 |
 | packed | Stripped baseline plus patched UPX `--best` | 1 | 374,072 |
 | recovered | Byte-identical recovery of the default protected bundle | 19 | 10,410,536 |
-| unmangled | Full protection with `--no-mangle-library` | 19 | 5,951,888 |
+| unmangled | Full protection without library filename mangling | 19 | 5,951,888 |
 | mangled | Full default protection | 19 | 5,968,316 |
 
 The baseline retains the application's manifest profile except for the command-local LTO override needed to match the protected build's LTO setting.
@@ -131,7 +131,7 @@ Do not replace it with the active system compiler and call the result matched.
 
 Create `variants/baseline`, `variants/stripped`, and `variants/packed` as defined in the table.
 The measured snapshot predates default-on symbol renaming.
-With the current CLI, use `--no-mangle-symbols` for the filename-mangled variant and add `--no-mangle-library` for the unmangled variant.
+With the current CLI, use `--no-mangle symbol` for the filename-mangled variant and bare `--no-mangle` for the unmangled variant.
 Copy each complete distribution to `variants/mangled` or `variants/unmangled` respectively.
 These policy selections reproduce the intended comparison, not a claim that newer source produces the recorded hashes or timings.
 Decompress every member of the mangled snapshot to `variants/recovered` using the exact matching patched packer.

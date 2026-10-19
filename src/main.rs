@@ -20,7 +20,7 @@ use std::{
 };
 
 use anyhow::Result;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -55,11 +55,7 @@ struct BuildOptions {
     #[command(flatten)]
     obfuscation: obfuscation::Obfuscation,
     /// Preserve an exact Rust dynamic symbol used by external consumers or runtime lookup.
-    #[arg(
-        long = "keep-symbol",
-        value_name = "NAME",
-        conflicts_with = "no-mangle-symbols"
-    )]
+    #[arg(long = "keep-symbol", value_name = "NAME")]
     keep_symbols: Vec<String>,
     #[command(flatten)]
     selection: SelectionOptions,
@@ -114,6 +110,18 @@ fn run() -> Result<()> {
     let cli = Cli::parse_from(args);
     match cli.command {
         Action::Build(options) => {
+            if !options.keep_symbols.is_empty()
+                && !options
+                    .obfuscation
+                    .enabled(obfuscation::Feature::MangleSymbols)
+            {
+                Cli::command()
+                    .error(
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "--keep-symbol cannot be used when --no-mangle disables symbol mangling",
+                    )
+                    .exit();
+            }
             support::HIDE_PROGRESS.store(options.quiet >= 2, Ordering::Relaxed);
             build::run(&options)
         }

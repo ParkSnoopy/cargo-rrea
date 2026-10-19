@@ -29,7 +29,7 @@ Cargo still uses its active toolchain to compile and test `cargo-rrea` itself; b
 
 The [feature registry](../src/obfuscation.rs) owns the CLI opt-outs and LLVM flag selection.
 Maximum obfuscation means all implemented features enabled, not an assertion that output is fingerprint-free or that compiler-defined pass levels were increased.
-Each switch disables one independent feature:
+Each selection disables the indicated transformation:
 
 | Switch | Disabled transformation |
 | --- | --- |
@@ -40,13 +40,15 @@ Each switch disables one independent feature:
 | `--no-fla` | Arkari control-flow flattening |
 | `--no-cie` | Arkari constant-integer encryption |
 | `--no-cfe` | Arkari constant-floating-point encryption |
-| `--no-mangle-library` | Library filename and loader-reference mangling |
-| `--no-mangle-symbols` | Closed-bundle Rust dynamic-symbol renaming |
+| `--no-mangle library` | Library filename and loader-reference mangling |
+| `--no-mangle symbol` | Closed-bundle Rust dynamic-symbol renaming |
+| `--no-mangle` | Both library and symbol mangling |
 | `--no-upx` | Runtime UPX packing and packing-specific checks |
 | `--no-opaque` | Opaque stored-block packing of Linux executables, restoring normal UPX compression |
 | `--no-strip` | Forced debug/strip profile overrides and post-link metadata/static-symbol stripping |
 | `--no-remap-paths` | Compiler path remapping and absolute-build-path rejection |
 
+Repeated `--no-mangle` selectors and comma-separated values are combined.
 The Arkari master gate is emitted only when at least one of its seven passes is selected.
 Disabling every pass leaves the same acquired compiler, linkage, and remaining transformations, with no injected obfuscation LLVM flags.
 The selected feature set is serialized into the shared compiler policy and contributes to the build-cache key.
@@ -63,10 +65,10 @@ Windows packing requires `--no-opaque` and otherwise fails before building.
 Opaque mode is reversible scrambling, not encryption, and can increase output size.
 
 ELF symbol renaming is default-on under the closed-bundle contract below.
-`--keep-symbol NAME` retains a specific externally required Rust name and conflicts with `--no-mangle-symbols`.
+`--keep-symbol NAME` retains a specific externally required Rust name and conflicts with any `--no-mangle` selection that disables symbol mangling.
 The retired positive `--mangle-symbols` switch is rejected.
 Unsupported selected features fail before metadata discovery, downloads, or compilation.
-Because PE symbol renaming is not implemented, Windows builds currently require explicit `--no-mangle-symbols`.
+Because PE symbol renaming is not implemented, Windows builds must disable it with `--no-mangle symbol` or bare `--no-mangle`.
 
 ## Cargo bootstrap and tool ownership
 
@@ -157,13 +159,13 @@ Only reachable generated Rust libraries and the compiler's dynamic standard libr
 Linux executables locate adjacent libraries through `$ORIGIN`.
 Required imports, exports, relocations, and unwind data remain intact.
 
-Library-name mangling is enabled by default and can be disabled with `--no-mangle-library`.
+Library-name mangling is enabled by default and can be disabled with `--no-mangle library` or bare `--no-mangle`.
 When enabled, Linux linking reserves dynamic-string space for the longer hashed names using redundant `/.` components in the `$ORIGIN` search path.
 The reserve scales with the dependency graph and includes alignment slack.
 Sanitization reduces that padded path back to `$ORIGIN` before rebuilding loader metadata, without changing unrelated search paths.
 This keeps code, data, and unwind addresses unchanged while leaving loader metadata below the UPX stub, including for tightly packed ELF layouts.
 
-Closed-bundle ELF Rust symbol renaming is enabled unless `--no-mangle-symbols` is selected.
+Closed-bundle ELF Rust symbol renaming is enabled unless `--no-mangle symbol` or bare `--no-mangle` is selected.
 The build contract requires all externally consumed or runtime-looked-up Rust names to be listed with `--keep-symbol NAME` when renaming is enabled.
 Windows rejects symbol renaming before building, including when selected by default.
 The [symbol policy](rust-fingerprints.md) defines eligibility, explicit exclusions, deterministic names, and remaining platform obligations.

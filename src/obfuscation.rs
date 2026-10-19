@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use clap::{Arg, ArgAction, ArgMatches, Args, Command, FromArgMatches};
+use clap::{Arg, ArgAction, ArgMatches, Args, Command, FromArgMatches, ValueEnum};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
@@ -19,6 +19,12 @@ pub enum Feature {
     Opaque,
     Strip,
     RemapPaths,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Mangle {
+    Symbol,
+    Library,
 }
 
 const FEATURES: &[(Feature, &str, &str, Option<&str>)] = &[
@@ -63,18 +69,6 @@ const FEATURES: &[(Feature, &str, &str, Option<&str>)] = &[
         "no-cfe",
         "Disable Arkari CFE",
         Some("-Cllvm-args=--irobf-cfe"),
-    ),
-    (
-        Feature::MangleLibrary,
-        "no-mangle-library",
-        "Keep original library filenames",
-        None,
-    ),
-    (
-        Feature::MangleSymbols,
-        "no-mangle-symbols",
-        "Keep original Rust dynamic symbol names (required on Windows)",
-        None,
     ),
     (Feature::Upx, "no-upx", "Disable UPX packing", None),
     (
@@ -132,7 +126,18 @@ impl Args for Obfuscation {
                     .action(ArgAction::SetTrue),
             );
         }
-        command
+        command.arg(
+            Arg::new("no-mangle")
+                .long("no-mangle")
+                .value_name("KIND")
+                .help("Disable selected mangling; omit KIND to disable all mangling")
+                .help_heading("Obfuscation (all enabled by default)")
+                .num_args(0..=1)
+                .default_missing_value("symbol,library")
+                .value_delimiter(',')
+                .value_parser(clap::value_parser!(Mangle))
+                .action(ArgAction::Append),
+        )
     }
 
     fn augment_args_for_update(command: Command) -> Command {
@@ -147,6 +152,18 @@ impl FromArgMatches for Obfuscation {
                 .iter()
                 .filter(|(_, flag, _, _)| matches.get_flag(flag))
                 .map(|(feature, _, _, _)| *feature)
+                .chain(
+                    matches
+                        .get_many::<Mangle>("no-mangle")
+                        .into_iter()
+                        .flatten()
+                        .map(|kind| {
+                            match kind {
+                                Mangle::Symbol => Feature::MangleSymbols,
+                                Mangle::Library => Feature::MangleLibrary,
+                            }
+                        }),
+                )
                 .collect(),
         })
     }
