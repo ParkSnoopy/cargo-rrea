@@ -1,34 +1,57 @@
 # Architecture
 
+- [Build contract](#scope-and-build-contract)
+- [Obfuscation policy](#obfuscation-policy)
+- [Tool ownership](#cargo-bootstrap-and-tool-ownership)
+- [Build and publication pipeline](#application-build-and-publication)
+- [Source ownership](#source-ownership)
+- [Compatibility and limits](#compatibility-and-limits)
+- [Source development](#source-development)
+
 ## Scope and build contract
 
 `cargo-rrea` is a Cargo subcommand for native release builds with Arkari LLVM passes, metadata stripping, and UPX packing.
 
 `cargo rrea build --release` and direct `cargo-rrea build --release` invocation select the same pipeline.
 Build flags belong to the `build` subcommand, not the root command.
-`-q` / `--quiet` suppresses Cargo progress and standalone compiler code-generation-unit names on either output stream.
-Repeating the flag (`-qq`, `-q -q`, or `--quiet --quiet`) also suppresses rrea status messages, including the report-path announcement and runtime-hint notes.
-Warnings, errors, executable paths on stdout, and report contents remain unchanged at both levels.
-Quiet levels do not change compiler flags, the obfuscation policy, or build-cache identity.
 `build` requires explicit `--release` (or `-r`); development and custom profiles are not supported.
-The default enables every implemented obfuscation feature and packs executables and required Rust shared libraries.
 
-Unless `--no-strip` is selected, `build` applies `debug = 0` and `strip = "symbols"` through command-local Cargo configuration.
-It does not edit any `Cargo.toml`, including on failed builds.
-Project profile settings, comments, and the panic strategy remain unchanged on disk.
-The child Cargo process always receives `CARGO_PROFILE_RELEASE_PANIC=unwind`, overriding the project's release panic setting and any inherited value of that environment variable.
-This is required by the precompiled dynamic standard library's `panic_unwind` runtime and is independent of obfuscation opt-outs.
-For projects configured with `panic = "abort"`, the built program deliberately uses unwinding instead of immediate abort.
-The build diagnostic and report expose the effective strategy.
+### Output levels
+
+| Arguments | Suppressed output |
+| --- | --- |
+| None | None |
+| `-q`, `--quiet` | Cargo progress and standalone compiler code-generation-unit names on either stream |
+| `-qq`, `-q -q`, `--quiet --quiet` | The above plus rrea status messages, report-path announcements, and runtime-hint notes |
+
+Warnings, errors, executable paths on stdout, and report contents remain unchanged at every level.
+Quiet levels leave compiler flags, obfuscation policy, and build-cache identity unchanged.
+
+### Profile overrides
+
+Overrides apply only to the child build process.
+Workspace and member manifests remain unchanged on success and failure.
+
+| Setting | Effective value | Opt-out |
+| --- | --- | --- |
+| Debug information | `debug = 0` | `--no-strip` retains the project setting |
+| Stripping | `strip = "symbols"` | `--no-strip` retains the project setting |
+| Panic strategy | `CARGO_PROFILE_RELEASE_PANIC=unwind` | Required by the shared runtime |
+
+The panic override replaces both the project's release setting and any inherited value of that environment variable.
+It matches the precompiled dynamic standard library's `panic_unwind` runtime, including when the project requests `panic = "abort"`.
+Diagnostics and reports expose the effective strategy.
+
+### Compiler selection
 
 Application builds select the acquired Arkari compiler and matching sysroot without changing the active Rust installation.
 A compiler failure stops the build without ordinary-rustc fallback.
-Cargo still uses its active toolchain to compile and test `cargo-rrea` itself; bootstrap prepares Arkari for the application pipeline rather than replacing Cargo's compiler mid-build.
+Cargo uses its active toolchain to compile and test `cargo-rrea` itself.
 
 ## Obfuscation policy
 
 The [feature registry](../src/obfuscation.rs) owns the CLI opt-outs and LLVM flag selection.
-Maximum obfuscation means all implemented features enabled, not an assertion that output is fingerprint-free or that compiler-defined pass levels were increased.
+All implemented features are enabled by default at the compiler's existing pass levels.
 Each selection disables the indicated transformation:
 
 | Switch | Disabled transformation |
@@ -49,28 +72,39 @@ Each selection disables the indicated transformation:
 | `--no-remap-paths` | Compiler path remapping and absolute-build-path rejection |
 
 Repeated `--no-mangle` selectors and comma-separated values are combined.
-The Arkari master gate is emitted only when at least one of its seven passes is selected.
-Disabling every pass leaves the same acquired compiler, linkage, and remaining transformations, with no injected obfuscation LLVM flags.
-The selected feature set is serialized into the shared compiler policy and contributes to the build-cache key.
-The wrapper, post-link stages, and reports consume that policy rather than independent defaults.
-External LLVM arguments remain rejected, even when all passes are disabled, so they cannot silently override the selection.
-LTO restrictions, the unwind panic strategy, runtime-metadata comparisons, input integrity, and atomic publication remain mandatory.
-`--no-strip` does not disable path checking, and `--no-remap-paths` does not disable stripping.
-Disabling these protections can expose metadata or local paths; the opt-outs are recorded in each report.
-`--no-upx` does not remove the bundled helper or its installation prerequisites, but no UPX subprocess runs for that build.
-With packing enabled, Linux x86_64 executables use the fork's `--opaque` stored-block mode unless `--no-opaque` is selected.
-Executable identity comes from Cargo's selected binary artifacts, not filename extensions or the ELF shared-object type used by PIE executables.
-Shared libraries always use normal compression because the fork does not support opaque library packing.
-Windows packing requires `--no-opaque` and otherwise fails before building.
+
+### Policy propagation
+
+- The Arkari master gate is emitted only when at least one of its seven passes is selected. Disabling every pass removes injected obfuscation LLVM flags while preserving the compiler, linkage, and remaining transformations.
+- The selected feature set is serialized into one compiler policy and contributes to the build-cache key. The wrapper, post-link stages, and reports consume that policy.
+- External LLVM arguments remain rejected even when all passes are disabled.
+- LTO restrictions, the unwind panic strategy, runtime-metadata comparisons, input integrity, and atomic publication remain mandatory.
+- Stripping and path remapping are independent. Their opt-outs can expose metadata or local paths and are recorded in each report.
+
+### Packing modes
+
+| Artifact | Packing policy |
+| --- | --- |
+| Linux x86_64 executable | `--opaque` stored-block mode by default, normal compression with `--no-opaque` |
+| Shared library | Normal compression |
+| Windows executable | Requires `--no-opaque` |
+| Any artifact with `--no-upx` | No UPX subprocess runs |
+
+Executable identity comes from Cargo's selected binary artifacts, not filename extensions or the ELF shared-object type used by PIE.
 Opaque mode is reversible scrambling, not encryption, and can increase output size.
+The bundled helper and its installation prerequisites remain required when runtime packing is disabled.
+
+### Symbol selection
 
 ELF symbol renaming is default-on under the closed-bundle contract below.
 `--keep-symbol NAME` retains a specific externally required Rust name and conflicts with any `--no-mangle` selection that disables symbol mangling.
-The retired positive `--mangle-symbols` switch is rejected.
+
 Unsupported selected features fail before metadata discovery, downloads, or compilation.
 Because PE symbol renaming is not implemented, Windows builds must disable it with `--no-mangle symbol` or bare `--no-mangle`.
 
 ## Cargo bootstrap and tool ownership
+
+### Compiler cache
 
 The [Cargo build script](../build.rs) runs for the first `cargo test`, `cargo build`, or `cargo run` that needs to compile this package.
 It automatically acquires the native obfuscating toolchain under the Cargo target directory:
@@ -85,130 +119,166 @@ target/
 
 A custom Cargo target directory uses the same `downloads/<host>/` layout.
 Development, test, and release profiles share this toolchain cache.
-No manual compiler download is required.
 
-The shared [toolchain module](../src/toolchain.rs) pins the compiler release with Rust byte-string support, resolves that tag through the GitHub API, and checks the expected host asset, HTTPS URL, archive size, and SHA-256 before bounded ZIP extraction.
-Archive traversal, links, and special files are rejected.
-Installation publishes the completed compiler directory before atomically publishing its release record.
-A file lock serializes concurrent acquisition, and a matching cached release avoids network access.
-An older cached release is replaced only after the pinned compiler is downloaded and verified; offline acquisition rejects a mismatched release without changing the cache record.
-Cached records and the expected compiler/sysroot layout are checked; invalid or incomplete installations fail rather than selecting another compiler.
-The downloaded compiler must run and report the matching host before bootstrap succeeds.
-The matching `stage1/lib/rustlib/<host>/bin/llvm-objcopy` must also exist and run.
-The application pipeline uses this bundled executable for both preflight and stripping; no system `llvm-objcopy` or PATH fallback is used.
+The shared [toolchain module](../src/toolchain.rs) owns acquisition:
+
+1. Resolve the pinned compiler release, including Rust byte-string support, through the GitHub API.
+2. Verify the expected host asset, HTTPS URL, archive size, and SHA-256.
+3. Extract the ZIP within bounds, rejecting traversal, links, and special files.
+4. Check the compiler/sysroot layout. Require a runnable compiler reporting the matching host and a runnable `stage1/lib/rustlib/<host>/bin/llvm-objcopy`.
+5. Publish the completed compiler directory, then atomically publish its release record.
+
+A file lock serializes acquisition.
+A matching cached release avoids network access; an older release is replaced only after the new one is verified.
+Offline mismatches leave the cache record unchanged, and invalid installations fail instead of selecting another compiler.
+
+Preflight and stripping both use the bundled objcopy rather than a system executable.
 
 The build script watches the release record, so removing the downloads directory causes a subsequent Cargo invocation to prepare it again.
-Set `CARGO_NET_OFFLINE=true` to forbid bootstrap downloads; an empty cache then fails.
-Cargo's command-line `--offline` alone governs Cargo's own network activity, not this custom downloader.
+
+### Runtime lookup and offline behavior
 
 At runtime, the CLI searches its executable's ancestors for the prepared `downloads/<host>/` cache.
-This reuses bootstrap output for both normal binaries and Cargo test artifacts without embedding an absolute source-checkout path.
+Normal binaries and Cargo test artifacts share this executable-relative lookup.
 A relocated or installed CLI without a nearby prepared cache acquires the compiler automatically in the per-user `cargo-rrea/<host>/` cache.
+
 Once a cache is selected, acquisition errors do not trigger a fallback to another cache or ordinary Rust compiler.
-The `build` subcommand's `--offline` and `--frozen` options forbid runtime compiler downloads.
+
+| Control | Network scope |
+| --- | --- |
+| `CARGO_NET_OFFLINE=true` | Forbids bootstrap downloads; an empty cache fails |
+| Cargo's `--offline` | Governs Cargo's network activity, not the custom downloader |
+| `cargo rrea build --offline` or `--frozen` | Forbids runtime compiler downloads |
+
+### UPX source integrity
 
 UPX is built from the pinned [ParkSnoopy/upx](https://github.com/ParkSnoopy/upx) [submodule](../thirdparty/upx), which tracks `devel`, or from the same sources bundled in the published crate.
 The [source pin](../thirdparty/upx-source.json) records the fork revision and a SHA-256 covering every source, generated stub, and recursive vendor file, excluding Git metadata.
+
 The digest is SHA-256 over sorted UTF-8 relative paths with `/` separators, each followed by a tab, the file's lowercase SHA-256, and LF.
-Both checkout and archive builds verify this digest; links, special files, missing files, extra files, and changed content fail verification.
-Checkout builds additionally require the pinned Git revision and clean recursive submodules.
-Crate archives do not require `.git` files or Git for UPX source preparation.
-After validating sources, the build script builds them directly with CMake without applying local patches or replacing generated stubs.
+
+- Checkout and archive builds reject links, special files, missing or extra files, and changed content.
+- Checkout builds also require the pinned Git revision and clean recursive submodules.
+- Source-integrity failures abort before compiler acquisition.
+- The watched source pin is read on every build-script run. Normal builds use that revision rather than fetching branch updates or selecting a released UPX binary.
+
+### Native build and embedding
+
 The fork owns packer changes and matching generated headers/maps together.
-Source-integrity failures abort before compiler acquisition.
-The build script reads the watched source pin from disk on each run.
-The native build directory is keyed by the source path and fork revision.
-Normal builds never fetch moving branch updates or fall back to a released UPX binary.
-CMake and Ninja build Debug for development/test profiles and Release for release profiles, honoring Cargo's job limit.
-Native build output stays under Cargo's `OUT_DIR`, outside the submodule.
+After source validation, CMake and Ninja build Debug for development/test profiles and Release for release profiles, honoring Cargo's job limit.
+Output stays under Cargo's `OUT_DIR`, keyed by the source path and fork revision.
 
 Linux native compilation remaps UPX source and build paths, including paths in assertions and debug information, so the embedded executable does not leak the checkout location into protected outputs.
 
 The UPX executable is embedded in `cargo-rrea` and materialized atomically into a content-addressed per-user cache with executable permissions.
 Existing cached bytes must match the embedded executable's SHA-256.
-Runtime UPX acquisition needs neither downloads nor the source checkout.
 The Linux UPX executable links the system C++ runtime, including `libstdc++.so.6`.
 
 ## Application build and publication
 
+### Rust linkage
+
 The complete normal Rust dependency graph participates in linkage planning, including selected executable packages' own libraries.
 Eligible Rust libraries also produce `dylib` artifacts; compiler arguments link consumers against them, matching either Cargo's `.rlib` or `.rmeta` dependency paths.
+
+### Native archive ownership
+
 Crates with native-library arguments (`-l`) retain their `rlib` linkage, as do all Rust consumers of a retained crate, transitively through the final executable.
 This keeps native archive ownership at the final link: a forced Rust dylib need not export native functions declared only through FFI, and separate shared consumers must not embed duplicate native state.
-Native-linked dependencies must use `lib` or `rlib` crate types; an explicit `dylib` requirement fails rather than producing an unsafe mixture.
-Unrelated Rust dependencies and the standard library remain dynamic, and every target Rust crate still receives the selected LLVM passes and path remapping.
-The library log records static or dynamic linkage after a successful compiler invocation, and its latest record for each rlib path determines subsequent consumers and publication.
-Only dynamic records are runtime-bundle candidates; native archives and intermediate rlibs are not distributed.
-Native build scripts remain responsible for C/C++ path remapping; Rust remap flags do not rewrite native debug data or string literals, and the output path audit still rejects leaks.
-Target compiler invocations suppress early JSON artifact notifications so Cargo waits for linkable output rather than scheduling shared-library consumers as soon as metadata is ready.
-They retain embedded Rust metadata for compiler linkage even when Cargo requests separate metadata; distribution stripping still removes it afterward.
-Generated shared libraries explicitly resolve the dynamic standard library for the application's allocator and panic runtime, including dependencies declared `no_std`.
-Shared-library inclusion follows the current Cargo artifact messages, including metadata sidecars that identify hashed compiler outputs when Cargo reports a selected workspace library through a hard-linked root output.
-Build scripts and procedural macros remain host-side and do not receive the target LLVM passes.
+
+- Native-linked dependencies must use `lib` or `rlib` crate types. An explicit `dylib` requirement fails.
+- Unrelated Rust dependencies and the standard library remain dynamic. Every target Rust crate still receives the selected LLVM passes and path remapping.
+- The library log records linkage after successful compilation. Its latest record for each rlib path determines subsequent consumers and publication; only dynamic records become runtime-bundle candidates.
+- Native build scripts own C/C++ path remapping. Rust remap flags leave native debug data and string literals untouched, and the output path audit rejects leaks.
+
+### Compiler scheduling and runtime
+
+- Suppress early target JSON artifact notifications so Cargo waits for linkable output, not merely metadata.
+- Retain embedded Rust metadata for compiler linkage even when Cargo requests separate metadata. Distribution stripping removes it afterward.
+- Resolve the dynamic standard library for generated shared libraries, including `no_std` dependencies that need the application's allocator and panic runtime.
+- Follow current Cargo artifact messages and metadata sidecars when selecting hashed library outputs, including hard-linked workspace root outputs.
+- Keep build scripts and procedural macros host-side, outside the target LLVM passes.
+
+### Optimization constraints
 
 Application builds override the release profile's cross-crate LTO setting with `lto = false` without editing the project's manifest.
 Cargo must emit native objects for dependencies that the wrapper also builds as shared libraries, rather than bitcode-only linker-plugin inputs.
 This retains Cargo's default local ThinLTO where applicable and the selected obfuscation passes.
-Explicit compiler flags that enable LTO or linker-plugin LTO are rejected because they conflict with this shared-library layout.
-Explicit panic codegen flags other than `-Cpanic=unwind` are also rejected with a runtime-compatibility diagnostic before invoking the target compiler.
-Remove conflicting `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` entries rather than overriding the built-in strategy.
 
-The pipeline applies the selected stripping and packing stages to executables and required Rust shared libraries.
-Runtime inclusion follows the actual ELF/PE import-library graph from the selected executables.
-Only reachable generated Rust libraries and the compiler's dynamic standard library enter the distribution.
-Linux executables locate adjacent libraries through `$ORIGIN`.
-Required imports, exports, relocations, and unwind data remain intact.
+- Reject explicit LTO or linker-plugin LTO flags that conflict with shared-library linkage.
+- Reject panic codegen flags other than `-Cpanic=unwind` before invoking the target compiler.
+- Remove conflicting `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` entries before building.
+
+### Bundle discovery and library names
+
+Runtime inclusion follows the ELF/PE import-library graph from the selected executables.
+Only reachable generated Rust libraries and the compiler's dynamic standard library enter the distribution, with the selected stripping and packing stages applied.
+Linux executables locate adjacent libraries through `$ORIGIN`; required imports, exports, relocations, and unwind data remain intact.
 
 Library-name mangling is enabled by default and can be disabled with `--no-mangle library` or bare `--no-mangle`.
-When enabled, Linux linking reserves dynamic-string space for the longer hashed names using redundant `/.` components in the `$ORIGIN` search path.
-The reserve scales with the dependency graph and includes alignment slack.
-Sanitization reduces that padded path back to `$ORIGIN` before rebuilding loader metadata, without changing unrelated search paths.
-This keeps code, data, and unwind addresses unchanged while leaving loader metadata below the UPX stub, including for tightly packed ELF layouts.
+
+1. Reserve dynamic-string space for longer hashed names using redundant `/.` components in the Linux `$ORIGIN` search path. Size the reserve for the dependency graph and alignment slack.
+2. Reduce the padded path back to `$ORIGIN` before rebuilding loader metadata, preserving unrelated search paths.
+3. Keep code, data, and unwind addresses unchanged and loader metadata below the UPX stub, including in tightly packed ELF layouts.
+
+### Symbol rewriting
 
 Closed-bundle ELF Rust symbol renaming is enabled unless `--no-mangle symbol` or bare `--no-mangle` is selected.
 The build contract requires all externally consumed or runtime-looked-up Rust names to be listed with `--keep-symbol NAME` when renaming is enabled.
 Windows rejects symbol renaming before building, including when selected by default.
 The [symbol policy](rust-fingerprints.md) defines eligibility, explicit exclusions, deterministic names, and remaining platform obligations.
+
 The complete reachable bundle is inspected before any transformation is selected.
 One shared map updates definitions and consumers through the existing ELF builder, including GNU/SysV hashes, GNU version arrays, and symbol-index relocations.
 The runtime audit checks addresses, sizes, section ownership, binding/type/visibility, versions, and relocation identities against the expected map.
+
 When stripping is enabled, unreferenced, non-loaded `rust_metadata_*` exports in `.rustc` are removed first in either symbol policy, preventing dangling section references.
 Unexpected exported metadata or a bundled reference to compiler metadata fails instead of being stripped.
 With `--no-strip`, compiler metadata and its exports remain together.
 
-Publication follows the selected transformations and their audits in a staging directory.
-Disabling stripping or packing never disables runtime-metadata preservation checks.
-The pinned fork must supply coordinated non-text format tags, native stubs, and lossless PE64 recovery required by the existing audits.
-These changes are maintained in the fork, not applied by cargo-rrea.
+### Packing and artifact audits
+
+The pinned fork supplies coordinated non-text format tags, native stubs, and lossless PE64 recovery.
 The fork's Linux runtime guard checks visible process names at packed executable startup and shared-library initialization and can terminate the process even when a matching analysis tool is unrelated.
+
 Native PE64 packing preserves the original import/export layout in the compressed source image while retaining the packed image's runtime tables.
-Offline recovery restores those source bytes instead of reconstructing the tables into a different layout.
-The pipeline no longer rewrites output headers to `RREA`.
-Packed-artifact audits require one checksum-valid patched pack header in the pinned format's search region, check ELF loader metadata, and reject original PE section labels.
-Old or corrupt headers fail even when application payloads contain valid text such as `UPX!` or `RREA`.
-Whole-file literal matches are recorded with offsets as `packed_audit.literal_hints`, not treated as proof of a packer-owned header.
-Application strings, overlays, and compressed byte sequences can legitimately contain those literals, including cargo-rrea's own diagnostics.
-Retained Rust runtime hints are reported as notes and retained in the unpacked audit, not silently removed or confused with a stripping failure.
-The matching embedded packer tests and decompresses these artifacts directly, and recovered bytes must match their pre-packing hash.
-Distributions contain only selected executables and required Rust shared libraries in `target/release/dist/`, relative to the selected manifest's directory.
-A virtual workspace manifest uses the workspace root.
-Custom Cargo target directories affect internal builds and reports, not the distribution destination.
-Publication locks the manifest-owned destination independently of the custom target directory.
-The complete runtime directory replaces the previous directory, so stale binaries and nonessential files do not remain.
-Compilation, audit, and packing failures preserve the previous distribution.
-Directory publication failures restore the previous directory when filesystem operations permit recovery.
-The CLI prints executable paths on stdout and diagnostics on stderr.
+Recovery restores those original source bytes.
+
+Artifact audits require:
+
+- One checksum-valid patched pack header in the pinned format's search region, valid ELF loader metadata, and rejection of original PE section labels.
+- Rejection of old or corrupt headers, including when application payloads contain `UPX!` or `RREA`.
+- Offset-bearing whole-file matches in `packed_audit.literal_hints`. Application strings, overlays, and compressed bytes are not classified as packer headers from text alone.
+- Retained Rust runtime hints recorded as notes and in the unpacked audit.
+- Direct testing and decompression by the matching embedded packer, with recovery matching the pre-packing hash.
+
+### Atomic publication
+
+Transform and audit every artifact in staging before publication.
+Runtime-metadata preservation checks remain active when stripping or packing is disabled.
+
+- Publish only selected executables and required Rust shared libraries to `target/release/dist/`, relative to the selected manifest. Virtual workspaces use the workspace root.
+- Lock that manifest-owned destination independently of the custom Cargo target directory, which affects only internal builds and reports.
+- Replace the complete runtime directory to remove stale binaries and nonessential files.
+- Preserve the previous distribution on compilation, audit, or packing failure. Restore it after directory-publication failure when filesystem operations permit recovery.
+- Print executable paths on stdout and diagnostics on stderr.
+
+### Reports
 
 Reports and Cargo/compiler logs stay under Cargo's target directory as `rrea/dist-<id>/`, outside the runtime distribution.
 The report records compiler release provenance, the UPX fork repository and source commit, executable hash, packing status, artifact hashes, audit results, and known limits.
-Each packed audit records the opaque bit read from the validated pack header, which must match the selected executable packing policy.
-`symbol_mangling` is null when renaming is disabled and otherwise records the exact map and retention reasons.
-`removed_metadata_symbols` records compiler-only export removals independently of renaming.
-`disabled_obfuscation` lists explicit feature opt-outs; `obfuscation` records the actual injected LLVM flags.
-`panic_strategy` records the required effective release strategy, `unwind`.
-Without packing, artifacts have `packed = false`, null `packed_audit`, and identical unpacked/output sizes and hashes.
-Artifact paths are absolute distribution paths.
-Log paths resolve against the report directory.
+
+| Field or value | Meaning |
+| --- | --- |
+| Packed audit's opaque bit | Read from the validated header and required to match the selected executable policy |
+| `symbol_mangling` | Exact rename map and retention reasons, or null when disabled |
+| `removed_metadata_symbols` | Compiler-only export removals, independent of renaming |
+| `disabled_obfuscation` | Explicit feature opt-outs |
+| `obfuscation` | Actual injected LLVM flags |
+| `panic_strategy` | Effective release strategy, `unwind` |
+| Packing disabled | `packed = false`, null `packed_audit`, identical unpacked/output sizes and hashes |
+| Artifact paths | Absolute distribution paths |
+| Log paths | Relative to the report directory |
 
 ## Source ownership
 
@@ -255,7 +325,8 @@ Log paths resolve against the report directory.
 
 ## Source development
 
-Git checkouts require recursive submodules initialized; crate archives already contain the verified UPX sources and vendors.
+### Setup
+
 Building `cargo-rrea` requires Rust/Cargo, Git, curl, CMake, Ninja, and a C/C++ toolchain with C++17 support.
 
 Initialize the submodules from the repository root:
@@ -264,7 +335,9 @@ Initialize the submodules from the repository root:
 git submodule update --init --recursive
 ```
 
-To update UPX deliberately, advance its branch and initialize the vendor revisions pinned by that commit:
+### Updating UPX
+
+Advance the fork branch and initialize the vendor revisions pinned by that commit:
 
 ```sh
 git submodule update --remote thirdparty/upx
@@ -287,6 +360,8 @@ done | sha256sum
 
 UPX's [LICENSE](../thirdparty/upx/LICENSE) and [COPYING](../thirdparty/upx/COPYING) remain in the upstream checkout.
 
+### Verification commands
+
 Run from the repository root:
 
 ```sh
@@ -302,33 +377,33 @@ cargo deny check licenses
 cargo package --locked
 ```
 
-The regular tests verify the bootstrapped compiler and matching sysroot, CLI and invalid-manifest rejection, archive extraction boundaries, detached offline cache misses, unsupported targets, and UPX cache integrity.
-The PE64 fixture checks import/export/code preservation and byte-identical packing recovery before and after name mangling, including differing IAT and lookup contents.
-The ignored native test exercises `cargo rrea build --release` directly for both default workspace selection and an explicitly selected executable package.
-Its project requests `panic = "abort"`, debug information, and unstripped output, and both successful and failed builds must preserve workspace and member manifests byte for byte.
-An inherited abort-profile environment setting must also be overridden, while explicit conflicting panic compiler flags must fail without replacing published artifacts.
-It uses the bootstrap compiler offline with an initially empty user cache.
-It compares both fixture executables against an ordinary development build, including panic and unwind behavior, and checks the reported strategy and target compiler arguments.
-The fixture includes an allocating `no_std` dependency and its transitive `no_std` library.
-It also includes a bindings-only C archive and a transitive Rust consumer: direct and indirect calls must share one mutable native counter, while unaffected Rust dependencies remain shared libraries.
-The archive fixture deliberately omits Cargo's optional `links` metadata so native ownership is discovered from actual compiler arguments rather than package names or manifest conventions.
-Its C producer remaps native debug paths so the no-strip case retains debug information without weakening the path-leak audit.
-The producer uses the existing CMake/Ninja prerequisites without registry dependencies, preserving the ordinary suite's offline cache-miss boundary.
-It also checks relocated loading, failure without the packed transitive dependency, and preservation of published output after compilation failure.
-The test covers member manifests, custom Cargo target directories, stale-file removal, and single-executable selection.
-The mangled Linux case uses a tightly packed ELF layout and checks that search-path padding is removed before packing.
-It checks the coordinated packing headers, fork provenance, default opaque mode and `--no-opaque`, and byte-identical recovery using the matching packer.
-The marker regression preserves application/overlay strings while rejecting old tags and corrupted checksums at real header locations.
-The ELF symbol fixture uses the native C compiler and linker to exercise GNU-only, SysV-only, and combined hash tables, versioned exports, TLS, IFUNCs, weak symbols, and a retained `dlsym` name.
-The default native Rust test exercises symbol renaming with both filename policies and rejects unknown keep-symbol names without replacing the previous distribution.
-It switches a populated cache from the default policy to `--no-fla` and back, checking actual compiler invocations and explicit symbol retention.
-The opt-out matrix exercises every feature disabled individually and all features disabled together, checking runtime behavior, packing/stripping state, exact reports, relocation, republication, and failed-publication preservation.
-It checks a length-delimited UTF-8 string with an embedded NUL in loaded segments after unpacking, requiring plaintext only when CSE is disabled.
-On failure, the native harness retains the fixture directory and reports full process exit statuses so signal termination can be investigated against the original artifacts.
-The ignored [Base116 evaluator](../tests/evaluation/mod.rs) records behavior, full artifact inventories, and round-robin timing observations for six prepared variants.
-See the [evaluation](evaluation.md) for its procedure, measurements, and evidence limits.
+### Test coverage
 
-The maximum Clippy preset applies to the CLI, Cargo build script, shared modules, and tests.
-Run the uncapped all-target gate without changing lint levels or thresholds.
-Packaging verification must build the extracted crate with UPX Git metadata absent; `--no-verify` does not exercise this boundary.
-Use `--allow-dirty` only when intentionally checking uncommitted packaging changes locally.
+| Suite | Boundaries |
+| --- | --- |
+| Regular tests | Compiler/sysroot bootstrap, CLI and invalid-manifest rejection, archive extraction, detached offline cache misses, unsupported targets, and UPX cache integrity |
+| PE64 fixture | Import/export/code preservation and byte-identical packing recovery before and after name mangling, including differing IAT and lookup contents |
+| ELF symbol fixture | GNU-only, SysV-only, and combined hashes; versioned exports, TLS, IFUNCs, weak symbols, and a retained `dlsym` name using the native compiler/linker |
+| Marker regression | Application/overlay strings preserved; old tags and corrupted checksums rejected at actual header locations |
+| [Base116 evaluator](../tests/evaluation/mod.rs) | Behavior, artifact inventories, and round-robin timings for six prepared variants; see [results and evidence limits](evaluation.md) |
+
+The ignored native Rust suite runs `cargo rrea build --release` with the bootstrap compiler offline and an initially empty user cache.
+Its coverage includes:
+
+- **Selection and profiles:** default workspace and explicit executable-package selection, member manifests, custom target directories, and single-executable builds. Workspace and member manifests remain byte-identical after success and failure, including when they request `panic = "abort"`, debug information, and unstripped output.
+- **Panic behavior:** override inherited abort-profile settings, reject conflicting panic compiler flags, and compare both executables with an ordinary development build. Check unwind behavior, the reported strategy, and actual target compiler arguments.
+- **Rust dependencies:** allocate through a `no_std` dependency and its transitive `no_std` library.
+- **Native ownership:** direct and transitive Rust calls share one bindings-only C archive's mutable counter while unaffected dependencies stay dynamic. Omit optional Cargo `links` metadata to test discovery from compiler arguments. Use CMake/Ninja and remapped C debug paths to preserve offline cache-miss and no-strip path-audit coverage.
+- **Publication:** relocated loading, missing packed transitive dependencies, stale-file removal, republication, and preservation of published output after compilation failure.
+- **Packing:** tight ELF layout, removal of search-path padding, coordinated headers, fork provenance, default opaque mode, `--no-opaque`, and byte-identical recovery.
+- **Symbol policy:** both filename policies, unknown keep-symbol rejection, and default → `--no-fla` → default transitions in a populated cache. Check actual compiler invocations and explicit symbol retention.
+- **Opt-outs:** every feature individually and all disabled together. Check behavior, packing/stripping state, exact reports, relocation, and failed publication.
+- **Strings:** a length-delimited UTF-8 string with an embedded NUL in loaded segments after unpacking, requiring plaintext only when CSE is disabled.
+
+Failed native runs retain the fixture directory and full process exit statuses for investigation.
+
+### Lint and packaging gates
+
+- Run the maximum, uncapped Clippy preset across the CLI, Cargo build script, shared modules, and tests without changing lint levels or thresholds.
+- Packaging verification must build the extracted crate with UPX Git metadata absent. `--no-verify` skips this boundary.
+- Use `--allow-dirty` only for intentional local checks of uncommitted packaging changes.
