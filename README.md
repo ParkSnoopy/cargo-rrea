@@ -11,8 +11,8 @@ Build Rust release applications with Arkari obfuscation, metadata stripping, and
 | Native build | CMake, Ninja, and a C/C++ toolchain with C++17 support |
 | Linux runtime | `libstdc++.so.6` |
 
-Linux is runtime-tested.  
-Windows execution remains unverified.  
+Linux application builds are runtime-tested.  
+Windows UPX execution is CI-tested, but the complete Windows build pipeline remains unverified.  
 
 ## Install
 
@@ -48,7 +48,7 @@ Release builds enable every implemented obfuscation feature, including library f
 Builds use `panic = "unwind"` to match the shared runtime, even when the project requests `abort`.  
 Profile overrides apply to the build process rather than `Cargo.toml`.  
 
-**Windows:** disable symbol mangling with `--no-mangle symbol` or bare `--no-mangle`, and add `--no-opaque` when packing.  
+**Windows:** disable symbol mangling with `--no-mangle symbol` or bare `--no-mangle`.  
 
 Package selection, offline builds, and the full argument reference:  
 
@@ -77,8 +77,8 @@ Their Rust code still receives the selected obfuscation passes.
 
 UPX is built from the pinned [ParkSnoopy/upx](https://github.com/ParkSnoopy/upx) fork.  
 
-- Linux executables use `--opaque` by default. `--no-opaque` selects normal compression.  
-- Shared libraries use normal compression.  
+- Linux and Windows x86_64 executables and shared libraries use `--opaque` by default.  
+- `--no-opaque` selects normal compression for all bundled artifacts.  
 - `--no-upx` disables packing for both executables and libraries.  
 
 Recovery requires the matching patched packer because stock UPX does not support the modified format.  

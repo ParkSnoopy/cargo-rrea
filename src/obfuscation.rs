@@ -74,7 +74,7 @@ const FEATURES: &[(Feature, &str, &str, Option<&str>)] = &[
     (
         Feature::Opaque,
         "no-opaque",
-        "Use normal UPX compression instead of opaque executable packing (required on Windows)",
+        "Use normal UPX compression instead of opaque packing for executables and libraries",
         None,
     ),
     (

@@ -431,7 +431,6 @@ fn offline_cache_miss_and_unsupported_targets_do_not_publish() -> Result<()> {
         .current_dir(root.path())
         .args(["build", "--release", "--offline"])
         .args(cfg!(windows).then_some("--no-mangle=symbol"))
-        .args(cfg!(windows).then_some("--no-opaque"))
         .env("XDG_CACHE_HOME", cache.path())
         .env("LOCALAPPDATA", cache.path());
     let output = command.output()?;
@@ -532,15 +531,9 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
     for &(selection, disabled) in selections {
         let mut selection = selection.to_vec();
         let mut disabled = disabled.to_vec();
-        if cfg!(windows) {
-            if !disabled.contains(&"mangle-symbols") {
-                selection.extend(["--no-mangle", "symbol"]);
-                disabled.push("mangle-symbols");
-            }
-            if !disabled.contains(&"opaque") {
-                selection.push("--no-opaque");
-                disabled.push("opaque");
-            }
+        if cfg!(windows) && !disabled.contains(&"mangle-symbols") {
+            selection.extend(["--no-mangle", "symbol"]);
+            disabled.push("mangle-symbols");
         }
         verify_native_pipeline(&selection, &disabled)
             .with_context(|| format!("native build selection: {selection:?}"))?;
@@ -1184,9 +1177,7 @@ fn verify_packing(
             data.get(header..header + 4) == Some(tag.as_slice()),
             "incorrect packed header"
         );
-        let opaque = cfg!(target_os = "linux")
-            && executable
-            && !disabled.iter().any(|arg| arg == "--no-opaque");
+        let opaque = !disabled.iter().any(|arg| arg == "--no-opaque");
         ensure!(
             (data.get(header + 7).context("missing packed level")? & 0x80 != 0) == opaque,
             "incorrect opaque packing header"

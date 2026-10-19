@@ -30,9 +30,8 @@ Reject incompatible revisions rather than accepting stock headers or weakening b
 
 | Selection | Packing mode |
 | --- | --- |
-| Linux x86_64 executable | Opaque by default |
-| `--no-opaque` | Normal executable compression |
-| Shared library | Normal compression |
+| Linux or Windows x86_64 executable or shared library | Opaque by default |
+| `--no-opaque` | Normal compression for all bundled artifacts |
 | `--no-upx` | Packing disabled |
 
 The fork's [runtime extension](../thirdparty/upx/src/extension/README.md) defines its startup process-name guard and opaque block format.
@@ -51,10 +50,11 @@ The fork's [runtime extension](../thirdparty/upx/src/extension/README.md) define
 
 - Preserve PE recovery equality for original, mangled, and differing-IAT/lookup inputs.
 - Preserve Linux loading, relocated dependencies, allocation, and panic/unwind behavior.
-- Exercise default opaque executable packing, `--no-opaque`, normally compressed libraries, and `--no-upx`.
+- Exercise default opaque executables and shared libraries, `--no-opaque` for the complete bundle, and `--no-upx`.
 - Compare the reported opaque state with the actual validated pack header and preserve byte-identical recovery in both modes.
 - Exercise the consuming CLI packing itself, not only the small fixture.
-- Keep native Windows runtime verification separate from cross-platform PE parsing and recovery.
+- Require passing native Linux and Windows [opaque runtime jobs](../thirdparty/upx/.github/workflows/opaque.yml) for the pinned fork revision.
+- Keep full Windows application-pipeline verification separate from the fork's native runtime tests and cross-platform PE parsing and recovery.
 
 ### Format audits
 

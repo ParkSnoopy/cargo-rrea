@@ -84,10 +84,7 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         obfuscation.enabled(Feature::Strip),
     )?;
     let mut outputs = prepare_artifacts(
-        artifacts.into_iter().map(|(relative, original)| {
-            let executable = executables.contains(&relative);
-            (relative, original, executable)
-        }),
+        artifacts,
         staging.path(),
         &tools,
         &names,
@@ -172,12 +169,6 @@ fn check_target(options: &BuildOptions) -> Result<&'static str> {
         !options.obfuscation.enabled(Feature::MangleSymbols)
             || target == "x86_64-unknown-linux-gnu",
         "symbol mangling is supported only for Linux ELF64 closed bundles; use --no-mangle symbol on this target"
-    );
-    ensure!(
-        !options.obfuscation.enabled(Feature::Upx)
-            || !options.obfuscation.enabled(Feature::Opaque)
-            || target == "x86_64-unknown-linux-gnu",
-        "opaque packing is supported only for Linux x86_64 executables; use --no-opaque on this target"
     );
     Ok(target)
 }
@@ -354,7 +345,7 @@ fn add_runtime_libraries(
 }
 
 fn prepare_artifacts(
-    artifacts: impl IntoIterator<Item = (PathBuf, PathBuf, bool)>,
+    artifacts: impl IntoIterator<Item = (PathBuf, PathBuf)>,
     staging: &Path,
     tools: &tools::Tools,
     names: &BTreeMap<String, String>,
@@ -364,7 +355,7 @@ fn prepare_artifacts(
 ) -> Result<Vec<ArtifactReport>> {
     let mut outputs = Vec::new();
 
-    for (relative, original, executable) in artifacts {
+    for (relative, original) in artifacts {
         let name = relative.to_str().context("artifact name is not UTF-8")?;
         let relative = Path::new(names.get(name).map_or(name, String::as_str));
         progress(format_args!("sanitizing {}", relative.display()))?;
@@ -390,7 +381,7 @@ fn prepare_artifacts(
                     &unpacked_sha256,
                     prohibited,
                     strip,
-                    executable && obfuscation.enabled(Feature::Opaque),
+                    obfuscation.enabled(Feature::Opaque),
                 )
             })
             .transpose()?;

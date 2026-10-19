@@ -67,7 +67,7 @@ Each selection disables the indicated transformation:
 | `--no-mangle symbol` | Closed-bundle Rust dynamic-symbol renaming |
 | `--no-mangle` | Both library and symbol mangling |
 | `--no-upx` | Runtime UPX packing and packing-specific checks |
-| `--no-opaque` | Opaque stored-block packing of Linux executables, restoring normal UPX compression |
+| `--no-opaque` | Opaque stored-payload packing of executables and shared libraries, restoring normal UPX compression |
 | `--no-strip` | Forced debug/strip profile overrides and post-link metadata/static-symbol stripping |
 | `--no-remap-paths` | Compiler path remapping and absolute-build-path rejection |
 
@@ -85,12 +85,11 @@ Repeated `--no-mangle` selectors and comma-separated values are combined.
 
 | Artifact | Packing policy |
 | --- | --- |
-| Linux x86_64 executable | `--opaque` stored-block mode by default, normal compression with `--no-opaque` |
-| Shared library | Normal compression |
-| Windows executable | Requires `--no-opaque` |
+| Linux x86_64 executable or `.so` | `--opaque` stored-block mode by default, normal compression with `--no-opaque` |
+| Windows x86_64 executable or `.dll` | `--opaque` stored-image mode by default, normal compression with `--no-opaque` |
 | Any artifact with `--no-upx` | No UPX subprocess runs |
 
-Executable identity comes from Cargo's selected binary artifacts, not filename extensions or the ELF shared-object type used by PIE.
+The selected packing mode applies uniformly to every artifact in the runtime bundle.
 Opaque mode is reversible scrambling, not encryption, and can increase output size.
 The bundled helper and its installation prerequisites remain required when runtime packing is disabled.
 
@@ -241,7 +240,7 @@ With `--no-strip`, compiler metadata and its exports remain together.
 The pinned fork supplies coordinated non-text format tags, native stubs, and lossless PE64 recovery.
 The fork's Linux runtime guard checks visible process names at packed executable startup and shared-library initialization and can terminate the process even when a matching analysis tool is unrelated.
 
-Native PE64 packing preserves the original import/export layout in the compressed source image while retaining the packed image's runtime tables.
+Native PE64 packing preserves the original import/export layout in the stored or compressed source image while retaining the packed image's runtime tables.
 Recovery restores those original source bytes.
 
 Artifact audits require:
@@ -270,7 +269,7 @@ The report records compiler release provenance, the UPX fork repository and sour
 
 | Field or value | Meaning |
 | --- | --- |
-| Packed audit's opaque bit | Read from the validated header and required to match the selected executable policy |
+| Packed audit's opaque bit | Read from the validated header and required to match the selected bundle policy |
 | `symbol_mangling` | Exact rename map and retention reasons, or null when disabled |
 | `removed_metadata_symbols` | Compiler-only export removals, independent of renaming |
 | `disabled_obfuscation` | Explicit feature opt-outs |
@@ -304,7 +303,7 @@ The report records compiler release provenance, the UPX fork repository and sour
 ## Compatibility and limits
 
 - Native x86_64 Linux GNU execution is covered by the owned workspace fixture.
-  Windows MSVC paths exist but do not yet have native runtime verification.
+  The fork's native Windows CI covers UPX executable startup and DLL loading, but the complete Windows MSVC build pipeline remains unverified.
   Cross-compilation and other hosts are rejected.
 - Rust `dylib` linkage preserves Rust-to-Rust interfaces without source adapters.
   It does not create a stable C ABI or move executable source into a library.
@@ -382,7 +381,7 @@ cargo package --locked
 | Suite | Boundaries |
 | --- | --- |
 | Regular tests | Compiler/sysroot bootstrap, CLI and invalid-manifest rejection, archive extraction, detached offline cache misses, unsupported targets, and UPX cache integrity |
-| PE64 fixture | Import/export/code preservation and byte-identical packing recovery before and after name mangling, including differing IAT and lookup contents |
+| PE64 fixture | Import/export/code preservation and byte-identical normal and opaque packing recovery before and after name mangling, including differing IAT and lookup contents |
 | ELF symbol fixture | GNU-only, SysV-only, and combined hashes; versioned exports, TLS, IFUNCs, weak symbols, and a retained `dlsym` name using the native compiler/linker |
 | Marker regression | Application/overlay strings preserved; old tags and corrupted checksums rejected at actual header locations |
 | [Base116 evaluator](../tests/evaluation/mod.rs) | Behavior, artifact inventories, and round-robin timings for six prepared variants; see [results and evidence limits](evaluation.md) |
@@ -395,7 +394,7 @@ Its coverage includes:
 - **Rust dependencies:** allocate through a `no_std` dependency and its transitive `no_std` library.
 - **Native ownership:** direct and transitive Rust calls share one bindings-only C archive's mutable counter while unaffected dependencies stay dynamic. Omit optional Cargo `links` metadata to test discovery from compiler arguments. Use CMake/Ninja and remapped C debug paths to preserve offline cache-miss and no-strip path-audit coverage.
 - **Publication:** relocated loading, missing packed transitive dependencies, stale-file removal, republication, and preservation of published output after compilation failure.
-- **Packing:** tight ELF layout, removal of search-path padding, coordinated headers, fork provenance, default opaque mode, `--no-opaque`, and byte-identical recovery.
+- **Packing:** tight ELF layout, removal of search-path padding, coordinated headers, fork provenance, default opaque executables and shared libraries, `--no-opaque`, and byte-identical recovery.
 - **Symbol policy:** both filename policies, unknown keep-symbol rejection, and default → `--no-fla` → default transitions in a populated cache. Check actual compiler invocations and explicit symbol retention.
 - **Opt-outs:** every feature individually and all disabled together. Check behavior, packing/stripping state, exact reports, relocation, and failed publication.
 - **Strings:** a length-delimited UTF-8 string with an embedded NUL in loaded segments after unpacking, requiring plaintext only when CSE is disabled.

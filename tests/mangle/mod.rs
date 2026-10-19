@@ -137,50 +137,56 @@ fn pe_mangling_preserves_imports_exports_code_and_packing() -> Result<()> {
 }
 
 fn check_pe_packing(path: &Path, data: &[u8]) -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let packed = directory.path().join("packed.dll");
-    let recovered = directory.path().join("recovered.dll");
-    let result = Command::new(env!("RREA_UPX_PATH"))
-        .args([
-            "--no-env",
-            "--best",
-            "--strip-relocs=0",
-            "--compress-exports=0",
-            "--compress-resources=0",
-            "-o",
-        ])
-        .arg(&packed)
-        .arg(path)
-        .output()?;
-    ensure!(
-        result.status.success(),
-        "PE packing failed: {}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    audit::validate_packed(&packed)?;
-    let result = Command::new(env!("RREA_UPX_PATH"))
-        .args(["--no-env", "--decompress", "-o"])
-        .arg(&recovered)
-        .arg(&packed)
-        .output()?;
-    ensure!(
-        result.status.success(),
-        "PE recovery failed: {}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let recovered = fs::read(recovered)?;
-    let changed = data
-        .iter()
-        .zip(&recovered)
-        .position(|(before, after)| before != after);
-    ensure!(
-        recovered == data,
-        "PE packing changed source bytes: first difference {changed:?}; sizes {} and {}; before {:?}; after {:?}",
-        data.len(),
-        recovered.len(),
-        changed.and_then(|index| data.get(index..index + 16)),
-        changed.and_then(|index| recovered.get(index..index + 16))
-    );
+    for opaque in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let packed = directory.path().join("packed.dll");
+        let recovered = directory.path().join("recovered.dll");
+        let result = Command::new(env!("RREA_UPX_PATH"))
+            .args([
+                "--no-env",
+                "--best",
+                "--strip-relocs=0",
+                "--compress-exports=0",
+                "--compress-resources=0",
+            ])
+            .args(opaque.then_some("--opaque"))
+            .arg("-o")
+            .arg(&packed)
+            .arg(path)
+            .output()?;
+        ensure!(
+            result.status.success(),
+            "PE packing failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        ensure!(
+            audit::validate_packed(&packed)?.opaque == opaque,
+            "incorrect PE opaque packing header"
+        );
+        let result = Command::new(env!("RREA_UPX_PATH"))
+            .args(["--no-env", "--decompress", "-o"])
+            .arg(&recovered)
+            .arg(&packed)
+            .output()?;
+        ensure!(
+            result.status.success(),
+            "PE recovery failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let recovered = fs::read(recovered)?;
+        let changed = data
+            .iter()
+            .zip(&recovered)
+            .position(|(before, after)| before != after);
+        ensure!(
+            recovered == data,
+            "PE packing changed source bytes: first difference {changed:?}; sizes {} and {}; before {:?}; after {:?}",
+            data.len(),
+            recovered.len(),
+            changed.and_then(|index| data.get(index..index + 16)),
+            changed.and_then(|index| recovered.get(index..index + 16))
+        );
+    }
     Ok(())
 }
 

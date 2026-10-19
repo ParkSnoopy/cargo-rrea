@@ -299,7 +299,6 @@ fn valid_pack_header(header: &[u8], format: u8) -> bool {
         && header[4..6] == [version, format]
         && matches!(header[6], 2..=10 | 14)
         && (1..=10).contains(&(header[7] & 0x7f))
-        && (format == 22 || header[7] & 0x80 == 0)
         && header[4..31]
             .iter()
             .map(|byte| u32::from(*byte))
