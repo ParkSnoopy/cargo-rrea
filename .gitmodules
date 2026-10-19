@@ -1,4 +1,4 @@
 [submodule "thirdparty/upx"]
 	path = thirdparty/upx
-	url = https://github.com/upx/upx.git
+	url = https://github.com/ParkSnoopy/upx
 	branch = devel

@@ -1,6 +1,6 @@
 [package]
 name        = "cargo-rrea"
-version     = "0.1.18"
+version     = "0.1.19"
 edition     = "2024"
 description = "Cargo builds with Arkari obfuscation and packed Rust shared dependencies"
 license     = "GPL-3.0-only"

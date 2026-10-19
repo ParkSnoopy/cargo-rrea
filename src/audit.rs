@@ -195,6 +195,7 @@ fn contains_text(data: &[u8], text: &str) -> bool {
 #[derive(Debug, Serialize)]
 pub struct PackedInspection {
     pub header_offset: usize,
+    pub opaque: bool,
     pub literal_hints: Vec<LiteralHint>,
 }
 
@@ -287,6 +288,7 @@ pub fn validate_packed(path: &Path) -> Result<PackedInspection> {
     .collect();
     Ok(PackedInspection {
         header_offset,
+        opaque: data[header_offset + 7] & 0x80 != 0,
         literal_hints,
     })
 }
@@ -296,7 +298,8 @@ fn valid_pack_header(header: &[u8], format: u8) -> bool {
     header[..4] == PACK_TAG
         && header[4..6] == [version, format]
         && matches!(header[6], 2..=10 | 14)
-        && (1..=10).contains(&header[7])
+        && (1..=10).contains(&(header[7] & 0x7f))
+        && (format == 22 || header[7] & 0x80 == 0)
         && header[4..31]
             .iter()
             .map(|byte| u32::from(*byte))

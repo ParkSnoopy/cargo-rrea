@@ -43,6 +43,7 @@ Each switch disables one independent feature:
 | `--no-mangle-library` | Library filename and loader-reference mangling |
 | `--no-mangle-symbols` | Closed-bundle Rust dynamic-symbol renaming |
 | `--no-upx` | Runtime UPX packing and packing-specific checks |
+| `--no-opaque` | Opaque stored-block packing of Linux executables, restoring normal UPX compression |
 | `--no-strip` | Forced debug/strip profile overrides and post-link metadata/static-symbol stripping |
 | `--no-remap-paths` | Compiler path remapping and absolute-build-path rejection |
 
@@ -55,6 +56,11 @@ LTO restrictions, the unwind panic strategy, runtime-metadata comparisons, input
 `--no-strip` does not disable path checking, and `--no-remap-paths` does not disable stripping.
 Disabling these protections can expose metadata or local paths; the opt-outs are recorded in each report.
 `--no-upx` does not remove the bundled helper or its installation prerequisites, but no UPX subprocess runs for that build.
+With packing enabled, Linux x86_64 executables use the fork's `--opaque` stored-block mode unless `--no-opaque` is selected.
+Executable identity comes from Cargo's selected binary artifacts, not filename extensions or the ELF shared-object type used by PIE executables.
+Shared libraries always use normal compression because the fork does not support opaque library packing.
+Windows packing requires `--no-opaque` and otherwise fails before building.
+Opaque mode is reversible scrambling, not encryption, and can increase output size.
 
 ELF symbol renaming is default-on under the closed-bundle contract below.
 `--keep-symbol NAME` retains a specific externally required Rust name and conflicts with `--no-mangle-symbols`.
@@ -99,18 +105,17 @@ A relocated or installed CLI without a nearby prepared cache acquires the compil
 Once a cache is selected, acquisition errors do not trigger a fallback to another cache or ordinary Rust compiler.
 The `build` subcommand's `--offline` and `--frozen` options forbid runtime compiler downloads.
 
-UPX is built from the pinned [submodule](../thirdparty/upx), which tracks `devel`, or from the same sources bundled in the published crate.
-The [source pin](../thirdparty/upx-source.json) records the upstream revision and a SHA-256 covering every source and recursive vendor file, excluding Git metadata.
+UPX is built from the pinned [ParkSnoopy/upx](https://github.com/ParkSnoopy/upx) [submodule](../thirdparty/upx), which tracks `devel`, or from the same sources bundled in the published crate.
+The [source pin](../thirdparty/upx-source.json) records the fork revision and a SHA-256 covering every source, generated stub, and recursive vendor file, excluding Git metadata.
 The digest is SHA-256 over sorted UTF-8 relative paths with `/` separators, each followed by a tab, the file's lowercase SHA-256, and LF.
 Both checkout and archive builds verify this digest; links, special files, missing files, extra files, and changed content fail verification.
 Checkout builds additionally require the pinned Git revision and clean recursive submodules.
-Crate archives do not require `.git` files, but all builds require Git to apply the [UPX overlay](../thirdparty/upx.patch).
-After validating pristine sources, the build script copies them without Git metadata into `OUT_DIR` and runs `git apply --whitespace=error-all` before CMake configuration.
-The patch contains source changes only, while the [generated-stub archive](../thirdparty/upx-stubs.zip) contains rebuilt headers and corresponding changed maps/dumps.
-Its [manifest](../thirdparty/upx-stubs.json) binds the archive hash to the source revision and patch hash.
-Patch failure, archive corruption, or a stale pairing aborts before compiler acquisition, and the upstream checkout remains unchanged.
-The build script reads all watched patch, pin, and stub-bundle inputs from disk on each run.
-The native build directory is keyed by the original source path, upstream revision, patch SHA-256, and generated-stub archive SHA-256.
+Crate archives do not require `.git` files or Git for UPX source preparation.
+After validating sources, the build script builds them directly with CMake without applying local patches or replacing generated stubs.
+The fork owns packer changes and matching generated headers/maps together.
+Source-integrity failures abort before compiler acquisition.
+The build script reads the watched source pin from disk on each run.
+The native build directory is keyed by the source path and fork revision.
 Normal builds never fetch moving branch updates or fall back to a released UPX binary.
 CMake and Ninja build Debug for development/test profiles and Release for release profiles, honoring Cargo's job limit.
 Native build output stays under Cargo's `OUT_DIR`, outside the submodule.
@@ -171,7 +176,9 @@ With `--no-strip`, compiler metadata and its exports remain together.
 
 Publication follows the selected transformations and their audits in a staging directory.
 Disabling stripping or packing never disables runtime-metadata preservation checks.
-The UPX overlay removes emitted identification banners, renames PE sections, anonymizes Linux memfd names, and coordinates non-text format tags in the packer and rebuilt x86_64 runtime stubs.
+The pinned fork must supply coordinated non-text format tags, native stubs, and lossless PE64 recovery required by the existing audits.
+These changes are maintained in the fork, not applied by cargo-rrea.
+The fork's Linux runtime guard checks visible process names at packed executable startup and shared-library initialization and can terminate the process even when a matching analysis tool is unrelated.
 Native PE64 packing preserves the original import/export layout in the compressed source image while retaining the packed image's runtime tables.
 Offline recovery restores those source bytes instead of reconstructing the tables into a different layout.
 The pipeline no longer rewrites output headers to `RREA`.
@@ -191,7 +198,8 @@ Directory publication failures restore the previous directory when filesystem op
 The CLI prints executable paths on stdout and diagnostics on stderr.
 
 Reports and Cargo/compiler logs stay under Cargo's target directory as `rrea/dist-<id>/`, outside the runtime distribution.
-The report records compiler release provenance, the UPX source commit, overlay and stub-archive SHA-256 values, executable hash, packing status, artifact hashes, audit results, and known limits.
+The report records compiler release provenance, the UPX fork repository and source commit, executable hash, packing status, artifact hashes, audit results, and known limits.
+Each packed audit records the opaque bit read from the validated pack header, which must match the selected executable packing policy.
 `symbol_mangling` is null when renaming is disabled and otherwise records the exact map and retention reasons.
 `removed_metadata_symbols` records compiler-only export removals independently of renaming.
 `disabled_obfuscation` lists explicit feature opt-outs; `obfuscation` records the actual injected LLVM flags.
@@ -210,8 +218,7 @@ Log paths resolve against the report directory.
 | [src/support.rs](../src/support.rs) | Shared child-process checks and file locks |
 | [build.rs](../build.rs) | Compiler bootstrap, pinned UPX source validation, native compilation, and embedding |
 | [thirdparty/upx-source.json](../thirdparty/upx-source.json) | UPX revision and recursive source-content digest for checkout and crate builds |
-| [thirdparty/upx.patch](../thirdparty/upx.patch) | Source-only unified diff with coordinated native packer/stub changes |
-| [thirdparty/upx-stubs.json](../thirdparty/upx-stubs.json) | Integrity and source/patch binding for the generated native-stub archive |
+| [thirdparty/upx](../thirdparty/upx) | Fork-owned packer source, generated runtime stubs, and vendor dependencies |
 | [src/toolchain.rs](../src/toolchain.rs) | Compiler release selection, verified acquisition, and bounded ZIP extraction shared by bootstrap and runtime |
 | [src/tools.rs](../src/tools.rs) | Runtime cache selection and embedded UPX materialization |
 | [src/dynamic.rs](../src/dynamic.rs) | Dependency selection and compiler argument adaptation |
@@ -263,9 +270,8 @@ git -C thirdparty/upx submodule update --init --recursive
 ```
 
 Review and record the changed gitlink with the consuming code, and update the source pin's revision and digest together.
-Regenerate the source overlay and bound stub archive against the new pinned revision in a disposable clone using the [maintenance procedure](upx-maintenance.md).
-Rebuild native headers and corresponding tracked maps/dumps with the verified upstream stubtools rather than merging generated numeric arrays.
-Overlay-only changes leave the pristine upstream revision and source digest unchanged.
+Maintain source changes and regenerated native headers/maps in the fork using the [maintenance procedure](upx-maintenance.md).
+Do not merge generated numeric arrays or restore local overlays in the consuming repository.
 Read the new revision with `git -C thirdparty/upx rev-parse HEAD` and compute the canonical source digest from the repository root:
 
 ```sh
@@ -309,7 +315,7 @@ The producer uses the existing CMake/Ninja prerequisites without registry depend
 It also checks relocated loading, failure without the packed transitive dependency, and preservation of published output after compilation failure.
 The test covers member manifests, custom Cargo target directories, stale-file removal, and single-executable selection.
 The mangled Linux case uses a tightly packed ELF layout and checks that search-path padding is removed before packing.
-It checks the coordinated packing headers, patch/stub provenance, and byte-identical recovery using the matching patched packer.
+It checks the coordinated packing headers, fork provenance, default opaque mode and `--no-opaque`, and byte-identical recovery using the matching packer.
 The marker regression preserves application/overlay strings while rejecting old tags and corrupted checksums at real header locations.
 The ELF symbol fixture uses the native C compiler and linker to exercise GNU-only, SysV-only, and combined hash tables, versioned exports, TLS, IFUNCs, weak symbols, and a retained `dlsym` name.
 The default native Rust test exercises symbol renaming with both filename policies and rejects unknown keep-symbol names without replacing the previous distribution.

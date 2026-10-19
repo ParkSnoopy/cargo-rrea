@@ -84,7 +84,10 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         obfuscation.enabled(Feature::Strip),
     )?;
     let mut outputs = prepare_artifacts(
-        artifacts,
+        artifacts.into_iter().map(|(relative, original)| {
+            let executable = executables.contains(&relative);
+            (relative, original, executable)
+        }),
         staging.path(),
         &tools,
         &names,
@@ -169,6 +172,12 @@ fn check_target(options: &BuildOptions) -> Result<&'static str> {
         !options.obfuscation.enabled(Feature::MangleSymbols)
             || target == "x86_64-unknown-linux-gnu",
         "symbol mangling is supported only for Linux ELF64 closed bundles; use --no-mangle-symbols on this target"
+    );
+    ensure!(
+        !options.obfuscation.enabled(Feature::Upx)
+            || !options.obfuscation.enabled(Feature::Opaque)
+            || target == "x86_64-unknown-linux-gnu",
+        "opaque packing is supported only for Linux x86_64 executables; use --no-opaque on this target"
     );
     Ok(target)
 }
@@ -345,7 +354,7 @@ fn add_runtime_libraries(
 }
 
 fn prepare_artifacts(
-    artifacts: BTreeMap<PathBuf, PathBuf>,
+    artifacts: impl IntoIterator<Item = (PathBuf, PathBuf, bool)>,
     staging: &Path,
     tools: &tools::Tools,
     names: &BTreeMap<String, String>,
@@ -355,7 +364,7 @@ fn prepare_artifacts(
 ) -> Result<Vec<ArtifactReport>> {
     let mut outputs = Vec::new();
 
-    for (relative, original) in artifacts {
+    for (relative, original, executable) in artifacts {
         let name = relative.to_str().context("artifact name is not UTF-8")?;
         let relative = Path::new(names.get(name).map_or(name, String::as_str));
         progress(format_args!("sanitizing {}", relative.display()))?;
@@ -381,6 +390,7 @@ fn prepare_artifacts(
                     &unpacked_sha256,
                     prohibited,
                     strip,
+                    executable && obfuscation.enabled(Feature::Opaque),
                 )
             })
             .transpose()?;
@@ -405,11 +415,15 @@ fn pack_artifact(
     unpacked_sha256: &str,
     prohibited: &[&Path],
     strip: bool,
+    opaque: bool,
 ) -> Result<audit::PackedInspection> {
     progress(format_args!("packing {}", clean.display()))?;
     let packed = clean.with_extension("rrea-packed");
     let mut pack = Command::new(&tools.upx);
     pack.args(["--no-env", "--best", "--overlay=copy"]);
+    if opaque {
+        pack.arg("--opaque");
+    }
     if cfg!(windows) {
         pack.args([
             "--strip-relocs=0",
@@ -438,6 +452,10 @@ fn pack_artifact(
         "UPX recovery changed executable bytes"
     );
     let packed_audit = audit::validate_packed(&packed)?;
+    ensure!(
+        packed_audit.opaque == opaque,
+        "UPX opaque mode does not match the selected policy"
+    );
     fs::remove_file(clean)?;
     fs::remove_file(&recovered)?;
     fs::rename(&packed, clean)?;

@@ -34,7 +34,7 @@ Packing and mangled filenames did not keep those facts hidden.
 
 Supplied terminal screenshots also show plaintext UPX branding, remaining `UPX!` bytes beside `RREA`, and Rust runtime names in Ghidra relocation diagnostics.
 These are concrete fingerprint leaks despite stock UPX refusing to unpack the executable.
-The [UPX overlay](../thirdparty/upx.patch) addresses known native packer identifiers, while Rust-symbol and structural-detection work remains in the [backlog](todo.md#fix-immediate-packer-and-language-fingerprints).
+The evaluated UPX overlay addressed known native packer identifiers and is now maintained in the [UPX fork](upx-maintenance.md), while Rust-symbol and structural-detection work remains in the [backlog](todo.md#fix-immediate-packer-and-language-fingerprints).
 
 The evaluated build used UPX with `RREA` header masking.
 The current [build pipeline](../src/build.rs) instead uses coordinated patched packer/stub tags and validates their actual header locations.

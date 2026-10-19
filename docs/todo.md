@@ -29,7 +29,7 @@ Completed implementation work does not establish resistance to reverse engineeri
 - Ghidra relocation diagnostics expose Rust-mangled names containing `panic_bounds_check` and `rust_no_alloc_shim_is_unstable_v2`.
 
 These observations establish visible fingerprints, not successful decompilation or a particular automatic language-classification result.
-The screenshots predate the [UPX overlay](../thirdparty/upx.patch), which changes native runtime tags together with the packer and removes known identification strings.
+The screenshots predate the native packer changes now owned by the [UPX fork](upx-maintenance.md), which must change runtime tags together with the packer and remove known identification strings.
 The [current audit](../src/audit.rs) validates real pack headers and rejects old tags at those locations.
 It records whole-file literal hints with offsets, retains runtime imports/exports, and reports selected Rust string hints.
 Arbitrary payload text is not evidence of a packer header.
@@ -44,11 +44,11 @@ Neither filename mangling nor static-symbol stripping addresses all of these lea
   Preserve attribution in upstream sources and licenses.
   Do not reject arbitrary payload occurrences of the audit's own vocabulary.
 - [x] Remove emitted native UPX banners, PE section labels, and Linux memfd names through a source overlay with rebuilt x86_64 stubs.
-  Preserve upstream source notices and licenses, verify the pristine [source pin](../thirdparty/upx-source.json), and record the overlay hash separately.
+  Preserve source notices and licenses, verify the [fork source pin](../thirdparty/upx-source.json), and record the fork revision and executable hash.
 - [x] Coordinate native packer/stub format tags and remove post-packing `RREA` rewriting instead of blindly replacing runtime bytes.
 - [x] Keep the source patch manageable for upstream updates.
-  The patch is 382 lines instead of 4,716, with generated headers/maps in a separately verified archive.
-  Follow the [regeneration and acceptance procedure](upx-maintenance.md), including exact source/patch/archive binding and byte-identical regeneration.
+  Source changes and generated headers/maps are now owned together by the fork rather than a local overlay and archive.
+  Follow the [fork pinning and acceptance procedure](upx-maintenance.md).
 - [ ] Evaluate structural detection separately from string detection, including stub instruction patterns and segment layout.
   Layout/disassembly inspection and live memfd probes establish that a recognizable loader remains despite empty native mapping names.
   Automated structural-detector coverage and an alternative-backend assessment remain open.

@@ -38,7 +38,7 @@ Release builds automatically use `panic = "unwind"` to match the shared runtime,
 This changes panic behavior without editing `Cargo.toml`; no environment-variable prefix is needed.  
 The default follows the [closed-bundle symbol contract](docs/rust-fingerprints.md#closed-bundle-symbol-map).  
 Externally consumed or runtime-looked-up Rust names require `--keep-symbol NAME`, unless symbol mangling is disabled.  
-Windows currently requires `--no-mangle-symbols`; unsupported default features fail before building rather than silently weakening protection.  
+Windows currently requires `--no-mangle-symbols` and, when packing, `--no-opaque`; unsupported default features fail before building rather than silently weakening protection.  
 
 Select a package and executable, or build with an already cached toolchain offline:
 
@@ -56,7 +56,9 @@ For a virtual workspace manifest, the destination is beneath the workspace root.
 Distribute the complete `dist` directory.
 Reports and logs stay in Cargo's target directory under `rrea/dist-<id>/`, outside the distribution.
 The pipeline packs executables and shared libraries unless `--no-upx` is selected.  
-The bundled UPX patch removes known identification banners, PE section labels, and named runtime mappings, and changes packer/stub tags together.
+UPX is built from the pinned [ParkSnoopy/upx](https://github.com/ParkSnoopy/upx) fork without local patches or stub overlays.  
+Linux executables use `--opaque` by default; `--no-opaque` restores normal compression, while shared libraries always use normal compression.  
+`--no-upx` skips both modes.  
 The matching patched packer can decompress the output; stock UPX does not support its modified format.
 
 ## Limits
@@ -65,6 +67,7 @@ The matching patched packer can decompress the output; stock UPX does not suppor
 - Required native/system libraries are not automatically bundled.
 - Rust strings and recognizable code can remain; UPX packing is reversible, not encryption.
 - Removing known packer identifiers does not prevent structural recognition or manual unpacking.
+- The fork's Linux startup guard can terminate a packed program when an analysis-tool process name is visible, even if that tool is unrelated.  
 - Modified UPX requires GPL-compatible programs under the [upstream license](thirdparty/upx/LICENSE).
 - Only build projects you trust: their build scripts and procedural macros execute during compilation.
 
@@ -73,5 +76,5 @@ The matching patched packer can decompress the output; stock UPX does not suppor
 [Reverse-engineering comparison](docs/comparison.md)
 
 [Measured evaluation and remaining work](docs/evaluation.md)  
-[UPX overlay maintenance](docs/upx-maintenance.md)  
+[UPX fork maintenance](docs/upx-maintenance.md)  
 [Rust fingerprint policy and symbol renaming](docs/rust-fingerprints.md)  

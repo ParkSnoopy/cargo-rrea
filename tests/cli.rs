@@ -23,6 +23,7 @@ const OPT_OUTS: &[&str] = &[
     "--no-mangle-library",
     "--no-mangle-symbols",
     "--no-upx",
+    "--no-opaque",
     "--no-strip",
     "--no-remap-paths",
 ];
@@ -372,6 +373,7 @@ fn offline_cache_miss_and_unsupported_targets_do_not_publish() -> Result<()> {
         .current_dir(root.path())
         .args(["build", "--release", "--offline"])
         .args(cfg!(windows).then_some("--no-mangle-symbols"))
+        .args(cfg!(windows).then_some("--no-opaque"))
         .env("XDG_CACHE_HOME", cache.path())
         .env("LOCALAPPDATA", cache.path());
     let output = command.output()?;
@@ -455,10 +457,14 @@ fn real_native_pipeline_preserves_behavior_and_failed_build_keeps_outputs() -> R
             "app/Cargo.toml",
         ],
         &["--no-mangle-library"],
+        &["--no-opaque"],
     ] {
         let mut selection = selection.to_vec();
         if cfg!(windows) {
             selection.push("--no-mangle-symbols");
+            if !selection.contains(&"--no-opaque") {
+                selection.push("--no-opaque");
+            }
         }
         verify_native_pipeline(&selection)
             .with_context(|| format!("native build selection: {selection:?}"))?;
@@ -897,7 +903,7 @@ fn verify_distribution(target: &Path, dist: &Path, paths: &[PathBuf]) -> Result<
         "expected two executables and three runtime libraries, got {artifacts:?}"
     );
     ensure!(
-        report["upx"]["repository"] == "upx/upx",
+        report["upx"]["repository"] == "ParkSnoopy/upx",
         "unexpected UPX repository: {}",
         report["upx"]
     );
@@ -906,16 +912,7 @@ fn verify_distribution(target: &Path, dist: &Path, paths: &[PathBuf]) -> Result<
         "unexpected UPX revision: {}",
         report["upx"]
     );
-    ensure!(
-        report["upx"]["patch_sha256"]
-            == digest(include_bytes!("../thirdparty/upx.patch").as_slice())?,
-        "unexpected UPX patch provenance"
-    );
-    ensure!(
-        report["upx"]["stubs_sha256"]
-            == digest(include_bytes!("../thirdparty/upx-stubs.zip").as_slice())?,
-        "unexpected UPX generated-stub provenance"
-    );
+
     let mut published_paths = Vec::new();
     for artifact in artifacts {
         let path = published[0]
@@ -1106,6 +1103,17 @@ fn verify_packing(
         ensure!(
             data.get(header..header + 4) == Some(tag.as_slice()),
             "incorrect packed header"
+        );
+        let opaque = cfg!(target_os = "linux")
+            && executable
+            && !disabled.iter().any(|arg| arg == "--no-opaque");
+        ensure!(
+            (data.get(header + 7).context("missing packed level")? & 0x80 != 0) == opaque,
+            "incorrect opaque packing header"
+        );
+        ensure!(
+            artifact["packed_audit"]["opaque"] == opaque,
+            "incorrect opaque packing report"
         );
         success(
             Command::new(env!("RREA_UPX_PATH"))

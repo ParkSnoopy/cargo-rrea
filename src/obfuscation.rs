@@ -16,6 +16,7 @@ pub enum Feature {
     MangleLibrary,
     MangleSymbols,
     Upx,
+    Opaque,
     Strip,
     RemapPaths,
 }
@@ -76,6 +77,12 @@ const FEATURES: &[(Feature, &str, &str, Option<&str>)] = &[
         None,
     ),
     (Feature::Upx, "no-upx", "Disable UPX packing", None),
+    (
+        Feature::Opaque,
+        "no-opaque",
+        "Use normal UPX compression instead of opaque executable packing (required on Windows)",
+        None,
+    ),
     (
         Feature::Strip,
         "no-strip",
