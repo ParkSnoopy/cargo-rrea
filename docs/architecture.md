@@ -213,6 +213,7 @@ This retains Cargo's default local ThinLTO where applicable and the selected obf
 Runtime inclusion follows the ELF/PE import-library graph from the selected executables.
 Only reachable generated Rust libraries and the compiler's dynamic standard library enter the distribution, with the selected stripping and packing stages applied.
 Linux executables locate libraries through `$ORIGIN/libs`; bundled libraries locate their siblings through `$ORIGIN`. These paths are relative to each binary, not the working directory. Required imports, exports, relocations, and unwind data remain intact.
+Windows executables embed a side-by-side dependency on the [private `libs` assembly](https://learn.microsoft.com/en-us/windows/win32/sbscs/assembly-searching-sequence). Its `libs/libs.manifest` lists the final bundled DLL filenames, including mangled names, so the Windows loader resolves direct and transitive imports relative to the executable before application startup. System DLL imports retain the normal system lookup. Manifest generation remains active when mangling or packing is disabled.
 
 Library-name mangling is enabled by default and can be disabled with `--no-mangle library` or bare `--no-mangle`.
 
@@ -256,9 +257,9 @@ Artifact audits require:
 Transform and audit every artifact in staging before publication.
 Runtime-metadata preservation checks remain active when stripping or packing is disabled.
 
-- Publish selected executables to `target/release/`, relative to the selected manifest. Linux `.so` files go in `target/release/libs/`; Windows DLLs remain beside the executables. Virtual workspaces use the workspace root.
+- Publish selected executables to `target/release/`, relative to the selected manifest. Bundled `.so` and `.dll` files go in `target/release/libs/`; Windows also requires `libs/libs.manifest`. Virtual workspaces use the workspace root.
 - Lock that manifest-owned destination independently of the custom Cargo target directory, which affects only internal builds and reports.
-- Track owned executable names and the Linux `libs` directory in `target/rrea/outputs.json`. Replace only these entries, remove previously selected executables and stale bundled libraries, and preserve unrelated Cargo outputs. Refuse unrelated directories or symlinks at output paths, including an unowned `libs` directory.
+- Track owned executable names and the `libs` directory in `target/rrea/outputs.json`. Replace only these entries, remove previously selected executables and stale bundled libraries, and preserve unrelated Cargo outputs. Refuse unrelated directories or symlinks at output paths, including an unowned `libs` directory.
 - Preserve previous outputs on compilation, audit, or packing failure. Back up replaced entries and restore them after publication failure when filesystem operations permit recovery. Serialize publishers; multi-entry replacement is not atomic to concurrent readers.
 - Print executable paths on stdout and diagnostics on stderr.
 

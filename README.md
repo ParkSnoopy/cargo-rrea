@@ -64,10 +64,10 @@ cargo rrea build --help
 | --- | --- |
 | Executable paths | stdout |
 | Executables | `target/release/` beside the selected `Cargo.toml` |
-| Linux shared libraries | `target/release/libs/` |
+| Shared libraries (`.so`, `.dll`) | `target/release/libs/` |
 | Build reports and logs | `rrea/dist-<id>/` under Cargo's target directory |
 
-Distribute the executables together with the complete `libs` directory on Linux; Windows DLLs remain beside the executables.  
+Distribute the executables together with the complete `libs` directory, including `libs.manifest` on Windows.  
 A virtual workspace manifest places these outputs beneath the workspace root.  
 Custom Cargo target directories affect builds and reports, not this destination.  
 

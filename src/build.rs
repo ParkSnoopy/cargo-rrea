@@ -21,6 +21,7 @@ use crate::{
     mangle,
     obfuscation::{Feature, Obfuscation},
     project,
+    runtime,
     support::progress,
     symbols,
     tools,
@@ -359,7 +360,7 @@ fn prepare_artifacts(
     for (relative, original) in artifacts {
         let name = relative.to_str().context("artifact name is not UTF-8")?;
         let relative = Path::new(names.get(name).map_or(name, String::as_str));
-        let relative = if relative.extension() == Some(OsStr::new("so")) {
+        let relative = if runtime::is_library(relative) {
             Path::new("libs").join(relative)
         } else {
             relative.to_path_buf()
@@ -532,18 +533,12 @@ fn publish(
     let binaries = tempfile::Builder::new()
         .prefix(".dist-")
         .tempdir_in(parent)?;
-    let mut entries = BTreeSet::new();
-    for artifact in report.artifacts {
-        let relative = artifact.path.strip_prefix(distribution)?;
-        let name = relative
-            .components()
-            .next()
-            .context("artifact has no filename")?;
-        entries.insert(PathBuf::from(name.as_os_str()));
-        let path = binaries.path().join(relative);
-        fs::create_dir_all(path.parent().context("artifact has no parent")?)?;
-        fs::copy(staging.join(relative), path)?;
-    }
+    let paths = report
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.path.strip_prefix(distribution))
+        .collect::<Result<Vec<_>, _>>()?;
+    let entries = runtime::stage(staging, binaries.path(), &paths, cfg!(windows))?;
     let suffix = staging
         .file_name()
         .and_then(OsStr::to_str)

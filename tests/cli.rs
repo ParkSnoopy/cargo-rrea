@@ -647,7 +647,7 @@ fn verify_native_fixture(
         &paths,
         &distribution,
     )?;
-    if selection.is_empty() {
+    if selection.is_empty() && !disabled.contains(&"mangle-symbols") {
         verify_policy_switch(
             &manifest_directory,
             &target,
@@ -997,37 +997,49 @@ fn verify_distribution(target: &Path, dist: &Path, paths: &[PathBuf]) -> Result<
             .join(artifact["path"].as_str().context("missing artifact path")?)
             .canonicalize()?;
 
+        let parent = if paths.contains(&path) {
+            dist.to_path_buf()
+        } else {
+            dist.join("libs")
+        };
         ensure!(
-            path.parent()
-                == Some(
-                    if path.extension().is_some_and(|extension| extension == "so") {
-                        dist.join("libs")
-                    } else {
-                        dist.to_path_buf()
-                    }
-                    .as_path()
-                ),
+            path.parent() == Some(parent.as_path()),
             "runtime artifact is not in the manifest's distribution directory: {path:?}"
         );
         verify_packing(&path, artifact, &report, paths.contains(&path))?;
         verify_library_name(&path, artifact, &report)?;
         published_paths.push(path);
     }
-    if cfg!(target_os = "linux") {
-        ensure!(
-            fs::read_dir(dist.join("libs"))?.count() == 3,
-            "library directory contains stale or missing files"
-        );
-        ensure!(
-            fs::read_dir(dist)?.all(|entry| {
-                entry.is_ok_and(|entry| {
+    ensure!(
+        fs::read_dir(dist.join("libs"))?.count() == 3 + usize::from(cfg!(windows)),
+        "library directory contains stale or missing files"
+    );
+    ensure!(
+        fs::read_dir(dist)?.all(|entry| {
+            entry.is_ok_and(|entry| {
+                !matches!(
                     entry
                         .path()
                         .extension()
-                        .is_none_or(|extension| extension != "so")
-                })
-            }),
-            "shared libraries were published beside the executables"
+                        .and_then(|extension| extension.to_str()),
+                    Some("so" | "dll")
+                )
+            })
+        }),
+        "shared libraries were published beside the executables"
+    );
+    if cfg!(windows) {
+        let manifest = fs::read_to_string(dist.join("libs/libs.manifest"))?;
+        ensure!(
+            published_paths
+                .iter()
+                .filter(|path| !paths.contains(path))
+                .all(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| manifest.contains(&format!("<file name=\"{name}\"/>")))
+                }),
+            "Windows manifest omits a runtime DLL"
         );
     }
     ensure!(
@@ -1289,22 +1301,15 @@ fn digest(data: &[u8]) -> Result<String> {
 }
 
 fn verify_relocation(root: &Path, distribution: &Distribution, paths: &[PathBuf]) -> Result<()> {
-    // Copy only runtime artifacts to exclude dependencies on build output and logs.
+    // Copy the runtime bundle, including Windows assembly metadata, without build logs.
     let relocated = root.join("relocated");
     fs::create_dir_all(&relocated)?;
-    for artifact in &distribution.artifacts {
-        let directory = if artifact
-            .extension()
-            .is_some_and(|extension| extension == "so")
-        {
-            relocated.join("libs")
-        } else {
-            relocated.clone()
-        };
-        fs::create_dir_all(&directory)?;
+    let source = paths[0].parent().context("executable has no parent")?;
+    copy_tree(&source.join("libs"), &relocated.join("libs"))?;
+    for executable in paths {
         fs::copy(
-            artifact,
-            directory.join(artifact.file_name().context("missing artifact name")?),
+            executable,
+            relocated.join(executable.file_name().context("missing executable name")?),
         )?;
     }
     for path in paths {
@@ -1338,15 +1343,11 @@ fn verify_relocation(root: &Path, distribution: &Distribution, paths: &[PathBuf]
         .artifacts
         .get(index)
         .context("missing transitive artifact")?;
-    let directory = if dependency
-        .extension()
-        .is_some_and(|extension| extension == "so")
-    {
-        relocated.join("libs")
-    } else {
-        relocated.clone()
-    };
-    fs::remove_file(directory.join(dependency.file_name().context("missing library name")?))?;
+    fs::remove_file(
+        relocated
+            .join("libs")
+            .join(dependency.file_name().context("missing library name")?),
+    )?;
     let missing =
         Command::new(relocated.join(paths[0].file_name().context("missing executable name")?))
             .env_remove("LD_LIBRARY_PATH")

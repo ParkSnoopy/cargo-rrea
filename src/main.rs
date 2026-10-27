@@ -6,6 +6,7 @@ mod dynamic;
 mod mangle;
 mod obfuscation;
 mod project;
+mod runtime;
 mod support;
 mod symbols;
 mod toolchain;

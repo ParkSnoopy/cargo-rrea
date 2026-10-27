@@ -15,6 +15,7 @@ use crate::{
     BuildOptions,
     obfuscation::{Feature, Obfuscation},
     project,
+    runtime,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -193,6 +194,9 @@ pub fn adapt(
             "$ORIGIN/libs"
         };
         args.push(format!("-Clink-arg=-Wl,-rpath,{directory}{padding}").into());
+    }
+    if cfg!(windows) && direct.is_none() {
+        args.extend(runtime::windows_link_arguments().map(OsString::from));
     }
     let Some(identity) = direct else {
         return Ok(None);
