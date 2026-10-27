@@ -63,11 +63,12 @@ cargo rrea build --help
 | Output | Location or contents |
 | --- | --- |
 | Executable paths | stdout |
-| Runtime distribution | `target/release/dist/` beside the selected `Cargo.toml` |
+| Executables | `target/release/` beside the selected `Cargo.toml` |
+| Linux shared libraries | `target/release/libs/` |
 | Build reports and logs | `rrea/dist-<id>/` under Cargo's target directory |
 
-Distribute the complete `dist` directory, including its required Rust shared libraries.  
-A virtual workspace manifest places it beneath the workspace root.  
+Distribute the executables together with the complete `libs` directory on Linux; Windows DLLs remain beside the executables.  
+A virtual workspace manifest places these outputs beneath the workspace root.  
 Custom Cargo target directories affect builds and reports, not this destination.  
 
 Native-linking crates and their Rust consumers retain rlib linkage.  

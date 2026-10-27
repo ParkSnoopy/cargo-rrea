@@ -586,8 +586,10 @@ fn verify_native_fixture(
     } else {
         root.path().to_path_buf()
     };
-    let dist = manifest_directory.join("target/release/dist");
+    let dist = manifest_directory.join("target/release");
     let baseline = root.path().join("baseline");
+    fs::create_dir_all(dist.join("deps"))?;
+    fs::write(dist.join("deps/keep.txt"), b"existing Cargo output")?;
     success(
         Command::new("cargo")
             .current_dir(root.path())
@@ -803,9 +805,12 @@ fn verify_republication(
     paths: &[PathBuf],
     distribution: &Distribution,
 ) -> Result<()> {
-    let dist = manifest_directory.join("target/release/dist");
+    let dist = manifest_directory.join("target/release");
     let opt_outs = policy_arguments(&distribution.report)?;
     fs::write(dist.join("stale.pdb"), b"not a runtime artifact")?;
+    if cfg!(target_os = "linux") {
+        fs::write(dist.join("libs/stale.so"), b"stale bundled library")?;
+    }
     let repeated = success(
         cargo_cli()?
             .current_dir(manifest_directory)
@@ -829,14 +834,15 @@ fn verify_republication(
         "rebuild changed executable paths"
     );
     ensure!(
-        !dist.join("stale.pdb").exists(),
-        "rebuild retained a nonessential file"
+        fs::read(dist.join("stale.pdb"))? == b"not a runtime artifact"
+            && fs::read(dist.join("deps/keep.txt"))? == b"existing Cargo output",
+        "rebuild changed unrelated Cargo output"
     );
     verify_behavior(baseline, paths)?;
     verify_rebuilt_policy(target, distribution)?;
     ensure!(
         distribution.artifacts.iter().all(|path| path.is_file())
-            && fs::read_dir(&dist)?.count() == distribution.artifacts.len(),
+            && !dist.join("libs/stale.so").exists(),
         "rebuild changed library names or retained stale files"
     );
     verify_failed_publication(manifest_directory, target, distribution)?;
@@ -856,10 +862,9 @@ fn verify_republication(
             .args(&opt_outs),
     )?;
     ensure!(
-        fs::read_dir(&dist)?.count() == 4
-            && !dist
-                .join(format!("fixture{}", std::env::consts::EXE_SUFFIX))
-                .exists(),
+        !dist
+            .join(format!("fixture{}", std::env::consts::EXE_SUFFIX))
+            .exists(),
         "single-binary build retained unselected runtime artifacts"
     );
     verify_behavior(
@@ -993,17 +998,38 @@ fn verify_distribution(target: &Path, dist: &Path, paths: &[PathBuf]) -> Result<
             .canonicalize()?;
 
         ensure!(
-            path.parent() == Some(dist),
+            path.parent()
+                == Some(
+                    if path.extension().is_some_and(|extension| extension == "so") {
+                        dist.join("libs")
+                    } else {
+                        dist.to_path_buf()
+                    }
+                    .as_path()
+                ),
             "runtime artifact is not in the manifest's distribution directory: {path:?}"
         );
         verify_packing(&path, artifact, &report, paths.contains(&path))?;
         verify_library_name(&path, artifact, &report)?;
         published_paths.push(path);
     }
-    ensure!(
-        fs::read_dir(dist)?.count() == published_paths.len(),
-        "distribution contains nonessential files"
-    );
+    if cfg!(target_os = "linux") {
+        ensure!(
+            fs::read_dir(dist.join("libs"))?.count() == 3,
+            "library directory contains stale or missing files"
+        );
+        ensure!(
+            fs::read_dir(dist)?.all(|entry| {
+                entry.is_ok_and(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .is_none_or(|extension| extension != "so")
+                })
+            }),
+            "shared libraries were published beside the executables"
+        );
+    }
     ensure!(
         paths.iter().all(|path| published_paths.contains(path)),
         "report omits an executable"
@@ -1235,6 +1261,15 @@ fn verify_packing(
                     !table.string(entry)?.windows(3).any(|bytes| bytes == b"/./"),
                     "ELF search-path padding remains"
                 );
+                if executable {
+                    ensure!(
+                        table
+                            .string(entry)?
+                            .split(|byte| *byte == b':')
+                            .any(|path| path == b"$ORIGIN/libs"),
+                        "ELF executable does not search its sibling libs directory"
+                    );
+                }
             }
         }
     }
@@ -1258,9 +1293,18 @@ fn verify_relocation(root: &Path, distribution: &Distribution, paths: &[PathBuf]
     let relocated = root.join("relocated");
     fs::create_dir_all(&relocated)?;
     for artifact in &distribution.artifacts {
+        let directory = if artifact
+            .extension()
+            .is_some_and(|extension| extension == "so")
+        {
+            relocated.join("libs")
+        } else {
+            relocated.clone()
+        };
+        fs::create_dir_all(&directory)?;
         fs::copy(
             artifact,
-            relocated.join(artifact.file_name().context("missing artifact name")?),
+            directory.join(artifact.file_name().context("missing artifact name")?),
         )?;
     }
     for path in paths {
@@ -1294,7 +1338,15 @@ fn verify_relocation(root: &Path, distribution: &Distribution, paths: &[PathBuf]
         .artifacts
         .get(index)
         .context("missing transitive artifact")?;
-    fs::remove_file(relocated.join(dependency.file_name().context("missing library name")?))?;
+    let directory = if dependency
+        .extension()
+        .is_some_and(|extension| extension == "so")
+    {
+        relocated.join("libs")
+    } else {
+        relocated.clone()
+    };
+    fs::remove_file(directory.join(dependency.file_name().context("missing library name")?))?;
     let missing =
         Command::new(relocated.join(paths[0].file_name().context("missing executable name")?))
             .env_remove("LD_LIBRARY_PATH")

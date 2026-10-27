@@ -187,7 +187,12 @@ pub fn adapt(
         } else {
             String::new()
         };
-        args.push(format!("-Clink-arg=-Wl,-rpath,$ORIGIN{padding}").into());
+        let directory = if direct.is_some() {
+            "$ORIGIN"
+        } else {
+            "$ORIGIN/libs"
+        };
+        args.push(format!("-Clink-arg=-Wl,-rpath,{directory}{padding}").into());
     }
     let Some(identity) = direct else {
         return Ok(None);

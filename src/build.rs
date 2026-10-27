@@ -33,7 +33,7 @@ pub fn run(options: &BuildOptions) -> Result<()> {
     let obfuscation = &options.obfuscation;
     let metadata = metadata(options)?;
     let manifest_directory = manifest_directory(&metadata)?;
-    let distribution = manifest_directory.join("target/release/dist");
+    let distribution = manifest_directory.join("target/release");
     let root = metadata.target_directory.as_std_path().join("rrea");
     fs::create_dir_all(&root)?;
     let publication_root = manifest_directory.join("target/rrea");
@@ -122,6 +122,7 @@ pub fn run(options: &BuildOptions) -> Result<()> {
         staging.path(),
         &prepared.directory,
         &distribution,
+        &publication_root.join("outputs.json"),
         &report,
     )?;
     print_distribution(&distribution, &executables, &destination)
@@ -358,8 +359,13 @@ fn prepare_artifacts(
     for (relative, original) in artifacts {
         let name = relative.to_str().context("artifact name is not UTF-8")?;
         let relative = Path::new(names.get(name).map_or(name, String::as_str));
+        let relative = if relative.extension() == Some(OsStr::new("so")) {
+            Path::new("libs").join(relative)
+        } else {
+            relative.to_path_buf()
+        };
         progress(format_args!("sanitizing {}", relative.display()))?;
-        let clean = staging.join(relative);
+        let clean = staging.join(&relative);
         let strip = obfuscation.enabled(Feature::Strip);
         let unpacked_audit = sanitize(&original, &clean, tools, names, symbols, prohibited, strip)?;
         let unpacked_sha256 = tools::sha256(&clean)?;
@@ -386,7 +392,7 @@ fn prepare_artifacts(
             })
             .transpose()?;
         outputs.push(ArtifactReport {
-            path: relative.to_path_buf(),
+            path: relative,
             packed: packed_audit.is_some(),
             unpacked_bytes,
             unpacked_sha256,
@@ -500,6 +506,7 @@ fn publish(
     staging: &Path,
     build_directory: &Path,
     distribution: &Path,
+    inventory: &Path,
     report: &BuildReport<'_>,
 ) -> Result<PathBuf> {
     let logs = tempfile::Builder::new()
@@ -525,12 +532,17 @@ fn publish(
     let binaries = tempfile::Builder::new()
         .prefix(".dist-")
         .tempdir_in(parent)?;
+    let mut entries = BTreeSet::new();
     for artifact in report.artifacts {
-        let name = artifact
-            .path
-            .file_name()
+        let relative = artifact.path.strip_prefix(distribution)?;
+        let name = relative
+            .components()
+            .next()
             .context("artifact has no filename")?;
-        fs::copy(staging.join(name), binaries.path().join(name))?;
+        entries.insert(PathBuf::from(name.as_os_str()));
+        let path = binaries.path().join(relative);
+        fs::create_dir_all(path.parent().context("artifact has no parent")?)?;
+        fs::copy(staging.join(relative), path)?;
     }
     let suffix = staging
         .file_name()
@@ -542,38 +554,103 @@ fn publish(
     let previous = tempfile::Builder::new()
         .prefix(".previous-")
         .tempdir_in(parent)?;
-    let backup = previous.path().join("dist");
-    if distribution.exists() {
-        fs::rename(distribution, &backup)?;
-    }
-    if let Err(error) = fs::rename(binaries.path(), distribution) {
-        let previous = previous.keep();
-        if backup.exists() {
-            fs::rename(&backup, distribution).with_context(|| {
+    let owned = publication_entries(distribution, inventory, &entries)?;
+    fs::create_dir_all(distribution)?;
+    let mut record =
+        tempfile::NamedTempFile::new_in(inventory.parent().context("inventory has no parent")?)?;
+    serde_json::to_writer(&mut record, &entries)?;
+    record.as_file().sync_all()?;
+    let previous = previous.keep();
+    let mut backed_up = Vec::new();
+    let mut installed = Vec::new();
+    let result = (|| -> Result<()> {
+        for name in owned.union(&entries) {
+            let path = distribution.join(name);
+            if path.exists() {
+                fs::rename(path, previous.join(name))?;
+                backed_up.push(name);
+            }
+        }
+        for name in &entries {
+            fs::rename(binaries.path().join(name), distribution.join(name))?;
+            installed.push(name);
+        }
+        fs::rename(logs.path(), &destination)?;
+        record.persist(inventory).map_err(|error| error.error)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        for name in installed.into_iter().rev() {
+            fs::rename(distribution.join(name), binaries.path().join(name))?;
+        }
+        for name in backed_up.into_iter().rev() {
+            fs::rename(previous.join(name), distribution.join(name)).with_context(|| {
                 format!(
-                    "cannot restore the previous distribution; preserved at {}",
-                    backup.display()
+                    "cannot restore previous outputs; preserved at {}",
+                    previous.display()
                 )
             })?;
         }
-        fs::remove_dir_all(previous)?;
-        return Err(error.into());
-    }
-    if let Err(error) = fs::rename(logs.path(), &destination) {
-        let previous = previous.keep();
-        fs::remove_dir_all(distribution)?;
-        if backup.exists() {
-            fs::rename(&backup, distribution).with_context(|| {
-                format!(
-                    "cannot restore the previous distribution; preserved at {}",
-                    backup.display()
-                )
-            })?;
+        if destination.exists() {
+            fs::remove_dir_all(&destination)?;
         }
         fs::remove_dir_all(previous)?;
-        return Err(error.into());
+        return Err(error);
     }
+    fs::remove_dir_all(previous)?;
     Ok(destination)
+}
+
+fn publication_entries(
+    distribution: &Path,
+    inventory: &Path,
+    entries: &BTreeSet<PathBuf>,
+) -> Result<BTreeSet<PathBuf>> {
+    let owned: BTreeSet<PathBuf> = if inventory.exists() {
+        serde_json::from_slice(&fs::read(inventory)?)?
+    } else {
+        BTreeSet::new()
+    };
+    for name in owned.union(entries) {
+        ensure!(
+            name.components().count() == 1
+                && matches!(
+                    name.components().next(),
+                    Some(std::path::Component::Normal(_))
+                )
+                && !matches!(
+                    name.to_str(),
+                    Some(
+                        "deps"
+                            | "build"
+                            | "examples"
+                            | "incremental"
+                            | ".fingerprint"
+                            | ".cargo-lock"
+                            | "dist"
+                    )
+                ),
+            "invalid published output name: {}",
+            name.display()
+        );
+        let path = distribution.join(name);
+        match path.symlink_metadata() {
+            Ok(metadata) => {
+                ensure!(
+                    if name == Path::new("libs") {
+                        owned.contains(name) && metadata.is_dir()
+                    } else {
+                        metadata.is_file()
+                    },
+                    "refusing to replace an unrelated directory or link: {}",
+                    path.display()
+                );
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(owned)
 }
 
 fn path_value(path: &Path) -> Result<String> {

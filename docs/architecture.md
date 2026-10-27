@@ -212,12 +212,12 @@ This retains Cargo's default local ThinLTO where applicable and the selected obf
 
 Runtime inclusion follows the ELF/PE import-library graph from the selected executables.
 Only reachable generated Rust libraries and the compiler's dynamic standard library enter the distribution, with the selected stripping and packing stages applied.
-Linux executables locate adjacent libraries through `$ORIGIN`; required imports, exports, relocations, and unwind data remain intact.
+Linux executables locate libraries through `$ORIGIN/libs`; bundled libraries locate their siblings through `$ORIGIN`. These paths are relative to each binary, not the working directory. Required imports, exports, relocations, and unwind data remain intact.
 
 Library-name mangling is enabled by default and can be disabled with `--no-mangle library` or bare `--no-mangle`.
 
 1. Reserve dynamic-string space for longer hashed names using redundant `/.` components in the Linux `$ORIGIN` search path. Size the reserve for the dependency graph and alignment slack.
-2. Reduce the padded path back to `$ORIGIN` before rebuilding loader metadata, preserving unrelated search paths.
+2. Reduce the padded path back to `$ORIGIN/libs` for executables or `$ORIGIN` for shared libraries before rebuilding loader metadata, preserving unrelated search paths.
 3. Keep code, data, and unwind addresses unchanged and loader metadata below the UPX stub, including in tightly packed ELF layouts.
 
 ### Symbol rewriting
@@ -251,15 +251,15 @@ Artifact audits require:
 - Retained Rust runtime hints recorded as notes and in the unpacked audit.
 - Direct testing and decompression by the matching embedded packer, with recovery matching the pre-packing hash.
 
-### Atomic publication
+### Transactional publication
 
 Transform and audit every artifact in staging before publication.
 Runtime-metadata preservation checks remain active when stripping or packing is disabled.
 
-- Publish only selected executables and required Rust shared libraries to `target/release/dist/`, relative to the selected manifest. Virtual workspaces use the workspace root.
+- Publish selected executables to `target/release/`, relative to the selected manifest. Linux `.so` files go in `target/release/libs/`; Windows DLLs remain beside the executables. Virtual workspaces use the workspace root.
 - Lock that manifest-owned destination independently of the custom Cargo target directory, which affects only internal builds and reports.
-- Replace the complete runtime directory to remove stale binaries and nonessential files.
-- Preserve the previous distribution on compilation, audit, or packing failure. Restore it after directory-publication failure when filesystem operations permit recovery.
+- Track owned executable names and the Linux `libs` directory in `target/rrea/outputs.json`. Replace only these entries, remove previously selected executables and stale bundled libraries, and preserve unrelated Cargo outputs. Refuse unrelated directories or symlinks at output paths, including an unowned `libs` directory.
+- Preserve previous outputs on compilation, audit, or packing failure. Back up replaced entries and restore them after publication failure when filesystem operations permit recovery. Serialize publishers; multi-entry replacement is not atomic to concurrent readers.
 - Print executable paths on stdout and diagnostics on stderr.
 
 ### Reports

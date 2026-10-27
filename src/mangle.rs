@@ -123,8 +123,9 @@ fn rewrite_elf(
             let paths = std::str::from_utf8(val.as_slice())?
                 .split(':')
                 .map(|path| {
-                    if path.trim_end_matches("/.") == "$ORIGIN" {
-                        "$ORIGIN"
+                    let normalized = path.trim_end_matches("/.");
+                    if matches!(normalized, "$ORIGIN" | "$ORIGIN/libs") {
+                        normalized
                     } else {
                         path
                     }
